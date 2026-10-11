@@ -1,0 +1,34 @@
+# Dependencies (Reinstalled via `npm install`)
+node_modules/
+/.pnp
+.pnp.js
+
+# Next.js Build Output
+.next/
+out/
+build/
+dist/
+
+# Hardhat Build Artifacts & Cache
+artifacts/
+cache/
+
+# Local Environment Variables & Secrets (CRITICAL: Never commit private keys!)
+.env
+.env.local
+.env*.local
+.env.production
+.env.development
+
+# TypeScript Build Info
+tsconfig.tsbuildinfo
+
+# OS Files
+.DS_Store
+*.pem
+Thumbs.db
+
+# Debug Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
