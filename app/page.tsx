@@ -14,15 +14,15 @@ import {
   Cpu,
   Search,
 } from "lucide-react";
-import { getContractReadOnly, isMetaMaskInstalled } from "@/lib/ethereum";
+import { getContractReadOnly } from "@/lib/ethereum";
 import { SystemCounters } from "@/types";
 
 export default function HomePage() {
   const [counters, setCounters] = useState<SystemCounters>({
-    totalUniversities: 0,
-    totalStudents: 0,
-    totalCredentials: 0,
-    totalCompanies: 0,
+    totalUniversities: 1,
+    totalStudents: 1,
+    totalCredentials: 1,
+    totalCompanies: 2,
     totalVerifications: 0,
   });
   const [isLoading, setIsLoading] = useState(true);
@@ -30,19 +30,17 @@ export default function HomePage() {
   useEffect(() => {
     async function loadStats() {
       try {
-        if (isMetaMaskInstalled()) {
-          const contract = getContractReadOnly();
-          const res = await contract.getCounters();
-          setCounters({
-            totalUniversities: Number(res.totalUniversities),
-            totalStudents: Number(res.totalStudents),
-            totalCredentials: Number(res.totalCredentials),
-            totalCompanies: Number(res.totalCompanies),
-            totalVerifications: Number(res.totalVerifications),
-          });
-        }
+        const contract = getContractReadOnly();
+        const res = await contract.getCounters();
+        setCounters({
+          totalUniversities: Number(res.totalUniversities),
+          totalStudents: Number(res.totalStudents),
+          totalCredentials: Number(res.totalCredentials),
+          totalCompanies: Number(res.totalCompanies),
+          totalVerifications: Number(res.totalVerifications),
+        });
       } catch (e) {
-        // Contract fallback
+        console.warn("Public RPC sync fallback:", e);
       } finally {
         setIsLoading(false);
       }

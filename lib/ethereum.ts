@@ -205,26 +205,36 @@ export async function getContractWithSigner(): Promise<Contract> {
 
 /**
  * Gets a Contract instance for read operations.
- * If browser provider is on a mismatched network or offline, falls back to direct RPC.
+ * Connects directly via public JSON-RPC to Sepolia so that ANY visitor on ANY device
+ * (mobile phone, laptop without MetaMask, incognito) can read stats, verify certificates,
+ * and view blockchain state without requiring MetaMask or being on the wrong network.
  */
 export function getContractReadOnly(): Contract {
-  if (isMetaMaskInstalled()) {
-    try {
-      const provider = new BrowserProvider(window.ethereum);
-      return new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
-    } catch (e) {
-      console.warn("BrowserProvider init failed, falling back:", e);
-    }
-  }
-
-  // Fallback to local RPC (31337) or Sepolia RPC
-  const fallbackUrl =
+  const primaryRpc =
     SUPPORTED_CHAIN_ID === 11155111
-      ? SUPPORTED_NETWORKS.SEPOLIA.rpcUrl
+      ? (process.env.NEXT_PUBLIC_RPC_URL || SUPPORTED_NETWORKS.SEPOLIA.rpcUrl)
       : SUPPORTED_NETWORKS.LOCAL.rpcUrl;
 
-  const fallbackProvider = new JsonRpcProvider(fallbackUrl);
-  return new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, fallbackProvider);
+  try {
+    const provider = new JsonRpcProvider(primaryRpc, SUPPORTED_CHAIN_ID, {
+      staticNetwork: true,
+    });
+    return new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
+  } catch (err) {
+    console.warn("Direct RPC init failed, checking fallback:", err);
+    if (isMetaMaskInstalled()) {
+      try {
+        const browserProvider = new BrowserProvider(window.ethereum);
+        return new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, browserProvider);
+      } catch (e) {}
+    }
+    const backupProvider = new JsonRpcProvider(
+      "https://ethereum-sepolia-rpc.publicnode.com",
+      11155111,
+      { staticNetwork: true }
+    );
+    return new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, backupProvider);
+  }
 }
 
 /**
