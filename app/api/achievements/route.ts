@@ -1,15 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import { Achievement, AchievementStatus } from "@/types";
 
-const DATA_FILE = path.join(process.cwd(), ".student_achievements.json");
+const CWD_FILE = path.join(process.cwd(), ".student_achievements.json");
+const TMP_FILE = path.join(os.tmpdir(), "student_achievements.json");
+
+declare global {
+  var __achievementsCache: Achievement[] | undefined;
+}
 
 function readAchievements(): Achievement[] {
+  if (global.__achievementsCache && Array.isArray(global.__achievementsCache)) {
+    return global.__achievementsCache;
+  }
+
+  // 1. Try /tmp
   try {
-    if (fs.existsSync(DATA_FILE)) {
-      const content = fs.readFileSync(DATA_FILE, "utf-8");
-      return JSON.parse(content);
+    if (fs.existsSync(TMP_FILE)) {
+      const content = fs.readFileSync(TMP_FILE, "utf-8");
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        global.__achievementsCache = parsed;
+        return parsed;
+      }
+    }
+  } catch (e) {}
+
+  // 2. Try cwd
+  try {
+    if (fs.existsSync(CWD_FILE)) {
+      const content = fs.readFileSync(CWD_FILE, "utf-8");
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        global.__achievementsCache = parsed;
+        return parsed;
+      }
     }
   } catch (e) {}
 
@@ -46,18 +73,27 @@ function readAchievements(): Achievement[] {
       exists: true,
     },
   ];
+
+  global.__achievementsCache = initial;
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
+    fs.writeFileSync(TMP_FILE, JSON.stringify(initial, null, 2));
+  } catch (e) {}
+  try {
+    fs.writeFileSync(CWD_FILE, JSON.stringify(initial, null, 2));
   } catch (e) {}
   return initial;
 }
 
 function writeAchievements(data: Achievement[]) {
+  global.__achievementsCache = data;
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    fs.writeFileSync(TMP_FILE, JSON.stringify(data, null, 2));
   } catch (e) {
-    console.error("Failed to write achievements:", e);
+    console.error("Failed to write achievements to /tmp:", e);
   }
+  try {
+    fs.writeFileSync(CWD_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {}
 }
 
 export async function GET(req: NextRequest) {

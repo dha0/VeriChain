@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Shield,
   Building2,
@@ -16,6 +16,7 @@ import {
   Inbox,
   Check,
   X,
+  Trash2,
   Send,
   Sparkles,
   Layers,
@@ -199,12 +200,25 @@ export default function AdminPage() {
         await tx.wait();
       }
 
+      // Mark approved in local state & localStorage immediately
+      setAccessRequests((prev) =>
+        prev.map((r) => (r.requestId === req.requestId ? { ...r, approved: true } : r))
+      );
+      try {
+        const approved = JSON.parse(localStorage.getItem("admin_approved_requests") || "[]");
+        if (!approved.includes(req.requestId)) {
+          localStorage.setItem("admin_approved_requests", JSON.stringify([...approved, req.requestId]));
+        }
+      } catch (e) {}
+
       // Mark approved in API
-      await fetch("/api/requests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "approve", requestId: req.requestId }),
-      });
+      try {
+        await fetch("/api/requests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "approve", requestId: req.requestId }),
+        });
+      } catch (e) {}
 
       setStatusMessage({
         text: `Success! ${req.name} registered on Ethereum. Code "${req.proposedCode}" is now active!`,
@@ -225,10 +239,40 @@ export default function AdminPage() {
   const handleRejectRequest = async (requestId: number) => {
     if (!confirm("Are you sure you want to dismiss this access request?")) return;
     try {
+      setAccessRequests((prev) => prev.filter((r) => r.requestId !== requestId));
+      try {
+        const dismissed = JSON.parse(localStorage.getItem("admin_dismissed_requests") || "[]");
+        if (!dismissed.includes(requestId)) {
+          localStorage.setItem("admin_dismissed_requests", JSON.stringify([...dismissed, requestId]));
+        }
+      } catch (e) {}
+
       await fetch("/api/requests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "reject", requestId }),
+      });
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleClearAllRequests = async () => {
+    if (!confirm("Are you sure you want to dismiss all pending access requests?")) return;
+    try {
+      const allPendingIds = pendingRequests.map((r) => r.requestId);
+      setAccessRequests([]);
+      try {
+        const dismissed = JSON.parse(localStorage.getItem("admin_dismissed_requests") || "[]");
+        const updated = Array.from(new Set([...dismissed, ...allPendingIds]));
+        localStorage.setItem("admin_dismissed_requests", JSON.stringify(updated));
+      } catch (e) {}
+
+      await fetch("/api/requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clear_all" }),
       });
       await fetchData();
     } catch (err) {
@@ -321,7 +365,47 @@ export default function AdminPage() {
     }
   };
 
-  const pendingRequests = accessRequests.filter((r) => !r.approved);
+  const pendingRequests = useMemo(() => {
+    let dismissedIds: number[] = [];
+    let approvedIds: number[] = [];
+    if (typeof window !== "undefined") {
+      try {
+        dismissedIds = JSON.parse(localStorage.getItem("admin_dismissed_requests") || "[]");
+        approvedIds = JSON.parse(localStorage.getItem("admin_approved_requests") || "[]");
+      } catch (e) {}
+    }
+
+    return accessRequests.filter((req) => {
+      // 1. Explicitly approved or dismissed
+      if (req.approved) return false;
+      if (dismissedIds.includes(req.requestId)) return false;
+      if (approvedIds.includes(req.requestId)) return false;
+
+      // 2. Check if already registered on the blockchain ledger
+      const targetCode = (req.proposedCode || "").trim().toUpperCase();
+      const targetName = (req.name || "").trim().toLowerCase();
+
+      if (req.entityType === "university") {
+        const codeMatch = universities.some(
+          (u) => (u.universityCode || "").trim().toUpperCase() === targetCode
+        );
+        const nameMatch = universities.some(
+          (u) => (u.name || "").trim().toLowerCase() === targetName
+        );
+        if (codeMatch || nameMatch) return false;
+      } else {
+        const codeMatch = companies.some(
+          (c) => (c.companyCode || "").trim().toUpperCase() === targetCode
+        );
+        const nameMatch = companies.some(
+          (c) => (c.name || "").trim().toLowerCase() === targetName
+        );
+        if (codeMatch || nameMatch) return false;
+      }
+
+      return true;
+    });
+  }, [accessRequests, universities, companies]);
 
   return (
     <RoleGuard allowedRoles={["admin"]} portalName="System Admin Console">
@@ -473,9 +557,22 @@ export default function AdminPage() {
                   Universities and IT employers requesting institutional registration codes. Review and approve with 1-click on Ethereum.
                 </p>
               </div>
-              <span className="text-[10px] font-mono px-2.5 py-1 rounded-full bg-purple-500/20 text-purple-200 border border-purple-500/30 font-semibold">
-                Governance Queue
-              </span>
+              <div className="flex items-center gap-2">
+                {pendingRequests.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAllRequests}
+                    className="flex items-center gap-1 text-[11px] font-semibold text-rose-300 hover:text-white bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/30 px-2.5 py-1 rounded-full transition-colors"
+                    title="Dismiss all current pending requests"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Dismiss All</span>
+                  </button>
+                )}
+                <span className="text-[10px] font-mono px-2.5 py-1 rounded-full bg-purple-500/20 text-purple-200 border border-purple-500/30 font-semibold">
+                  Governance Queue
+                </span>
+              </div>
             </div>
 
             <div className="overflow-x-auto">

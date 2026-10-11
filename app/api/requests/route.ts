@@ -1,52 +1,66 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import { AccessRequest } from "@/types";
 
-const DATA_FILE = path.join(process.cwd(), ".access_requests.json");
+const CWD_FILE = path.join(process.cwd(), ".access_requests.json");
+const TMP_FILE = path.join(os.tmpdir(), "access_requests.json");
+
+// In-memory cache across serverless warm invocations
+declare global {
+  var __accessRequestsCache: AccessRequest[] | undefined;
+}
 
 function readRequests(): AccessRequest[] {
+  if (global.__accessRequestsCache && Array.isArray(global.__accessRequestsCache)) {
+    return global.__accessRequestsCache;
+  }
+
+  // 1. Check /tmp first (writable in Vercel serverless functions)
   try {
-    if (fs.existsSync(DATA_FILE)) {
-      const content = fs.readFileSync(DATA_FILE, "utf-8");
-      return JSON.parse(content);
+    if (fs.existsSync(TMP_FILE)) {
+      const content = fs.readFileSync(TMP_FILE, "utf-8");
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        global.__accessRequestsCache = parsed;
+        return parsed;
+      }
     }
   } catch (e) {}
 
-  // Initial seed demo requests
-  const initial: AccessRequest[] = [
-    {
-      requestId: 1,
-      entityType: "university",
-      name: "Indian Institute of Science (IISc)",
-      proposedCode: "IISC-BLR-01",
-      contactEmail: "registrar@iisc.ac.in",
-      wallet: "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
-      approved: false,
-      timestamp: Date.now() - 3600000 * 24,
-    },
-    {
-      requestId: 2,
-      entityType: "company",
-      name: "Tata Consultancy Services (TCS)",
-      proposedCode: "TCS-MUM-01",
-      contactEmail: "campus.hiring@tcs.com",
-      wallet: "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
-      approved: false,
-      timestamp: Date.now() - 3600000 * 12,
-    },
-  ];
+  // 2. Check project root file (persisted in git or local dev)
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
+    if (fs.existsSync(CWD_FILE)) {
+      const content = fs.readFileSync(CWD_FILE, "utf-8");
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        global.__accessRequestsCache = parsed;
+        return parsed;
+      }
+    }
   } catch (e) {}
-  return initial;
+
+  // Return empty list if no requests found (do not re-seed deleted demo requests)
+  global.__accessRequestsCache = [];
+  return [];
 }
 
 function writeRequests(data: AccessRequest[]) {
+  global.__accessRequestsCache = data;
+
+  // 1. Write to /tmp (always writable in Vercel/AWS Lambda)
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    fs.writeFileSync(TMP_FILE, JSON.stringify(data, null, 2));
   } catch (e) {
-    console.error("Failed to write access requests:", e);
+    console.error("Failed to write access requests to /tmp:", e);
+  }
+
+  // 2. Try writing to cwd (works in local development, silent no-op on Vercel read-only filesystem)
+  try {
+    fs.writeFileSync(CWD_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    // EROFS on serverless is expected and handled by /tmp & memory cache
   }
 }
 
@@ -68,7 +82,7 @@ export async function POST(req: NextRequest) {
       }
 
       const newReq: AccessRequest = {
-        requestId: requests.length + 1,
+        requestId: requests.length > 0 ? Math.max(...requests.map((r) => r.requestId)) + 1 : 1,
         entityType,
         name,
         proposedCode: proposedCode.toUpperCase(),
@@ -94,10 +108,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, request: requests[index] });
     }
 
-    if (action === "reject") {
+    if (action === "reject" || action === "delete") {
       const filtered = requests.filter((r) => r.requestId !== Number(requestId));
       writeRequests(filtered);
-      return NextResponse.json({ success: true });
+      return NextResponse.json({ success: true, requests: filtered });
+    }
+
+    if (action === "clear_all") {
+      writeRequests([]);
+      return NextResponse.json({ success: true, requests: [] });
     }
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
