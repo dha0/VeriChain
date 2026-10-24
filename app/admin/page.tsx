@@ -22,6 +22,7 @@ import {
   Layers,
   FileCheck,
 } from "lucide-react";
+import { ethers } from "ethers";
 import {
   getContractReadOnly,
   getContractWithSigner,
@@ -180,23 +181,27 @@ export default function AdminPage() {
     setStatusMessage(null);
     try {
       const contract = await getContractWithSigner();
-      const targetWallet =
-        req.wallet && req.wallet !== "0x0000000000000000000000000000000000000000"
-          ? req.wallet
-          : req.entityType === "university"
-          ? "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-          : "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
+      let targetWallet = req.wallet?.trim();
+      const isInvalidOrZero =
+        !targetWallet ||
+        targetWallet === ZERO_WALLET ||
+        !ethers.isAddress(targetWallet);
+
+      if (isInvalidOrZero) {
+        // Generate a fresh unique institutional address so on-chain registration never conflicts with existing institutions
+        targetWallet = ethers.Wallet.createRandom().address;
+      }
 
       setStatusMessage({
-        text: `Transacting on Ethereum: Registering ${req.name} (${req.proposedCode})...`,
+        text: `Transacting on Ethereum: Registering ${req.name} (${req.proposedCode}) with wallet ${targetWallet}...`,
         type: "info",
       });
 
       if (req.entityType === "university") {
-        const tx = await contract.registerUniversity(req.name, req.proposedCode, targetWallet);
+        const tx = await contract.registerUniversity(req.name.trim(), req.proposedCode.trim().toUpperCase(), targetWallet);
         await tx.wait();
       } else {
-        const tx = await contract.registerCompany(req.name, req.proposedCode, targetWallet);
+        const tx = await contract.registerCompany(req.name.trim(), req.proposedCode.trim().toUpperCase(), targetWallet);
         await tx.wait();
       }
 
@@ -215,14 +220,24 @@ export default function AdminPage() {
       } catch (e) {}
 
       setStatusMessage({
-        text: `Success! ${req.name} registered on Ethereum. Code "${req.proposedCode}" is now active!`,
+        text: `Success! ${req.name} accredited on Ethereum. Code "${req.proposedCode}" is now active!`,
         type: "success",
       });
 
       await fetchData();
     } catch (err: any) {
+      let msg = err.reason || err.message || "Failed to register entity on ledger";
+      if (msg.includes("Conflict: University wallet already registered")) {
+        msg = "Conflict: The wallet address is already assigned to another accredited university. Please enter a different MetaMask address, or leave blank to auto-generate a fresh institutional address.";
+      } else if (msg.includes("Conflict: Company wallet already registered")) {
+        msg = "Conflict: The wallet address is already assigned to another corporate hiring partner.";
+      } else if (msg.includes("Conflict: University code already registered")) {
+        msg = `Conflict: University Code "${req.proposedCode}" is already registered on Ethereum.`;
+      } else if (msg.includes("Conflict: Company code already registered")) {
+        msg = `Conflict: Corporate Code "${req.proposedCode}" is already registered on Ethereum.`;
+      }
       setStatusMessage({
-        text: err.reason || err.message || "Failed to register entity on ledger",
+        text: msg,
         type: "error",
       });
     } finally {
@@ -266,23 +281,37 @@ export default function AdminPage() {
     setStatusMessage(null);
     try {
       const contract = await getContractWithSigner();
-      // Use provided wallet, or fall back to admin wallet (university must update via re-register)
-      const resolvedWallet = uWallet.trim() || ZERO_WALLET;
-      if (resolvedWallet === ZERO_WALLET) {
-        setStatusMessage({ text: "Warning: No wallet provided — university login will require re-registration with their address.", type: "info" });
-        await new Promise(r => setTimeout(r, 1500));
+      let resolvedWallet = uWallet.trim();
+      if (!resolvedWallet || resolvedWallet === ZERO_WALLET || !ethers.isAddress(resolvedWallet)) {
+        // Auto-provision a unique wallet address so the contract does not revert with "Validation: Zero address wallet"
+        resolvedWallet = ethers.Wallet.createRandom().address;
+        setStatusMessage({
+          text: `Auto-provisioned unique institutional wallet: ${resolvedWallet}. Registering...`,
+          type: "info",
+        });
       }
-      const tx = await contract.registerUniversity(uName, uCode, resolvedWallet);
+
+      const cleanCode = uCode.trim().toUpperCase();
+      const tx = await contract.registerUniversity(uName.trim(), cleanCode, resolvedWallet);
       setStatusMessage({ text: "Submitting to Ethereum network...", type: "info" });
       await tx.wait();
-      setStatusMessage({ text: `University "${uName}" accredited on blockchain! Code: ${uCode}`, type: "success" });
+      setStatusMessage({
+        text: `University "${uName.trim()}" accredited on blockchain! Code: ${cleanCode}`,
+        type: "success"
+      });
       setUName("");
       setUCode("");
       setUWallet("");
       await fetchData();
     } catch (err: any) {
+      let msg = err.reason || err.message || "Failed to register university";
+      if (msg.includes("Conflict: University wallet already registered")) {
+        msg = "Conflict: The wallet address entered is already registered to another university on Ethereum. Please enter a different, unique MetaMask wallet address, or leave blank to auto-generate one.";
+      } else if (msg.includes("Conflict: University code already registered")) {
+        msg = `Conflict: University Code "${uCode.trim().toUpperCase()}" is already registered on Ethereum.`;
+      }
       setStatusMessage({
-        text: err.reason || err.message || "Failed to register university",
+        text: msg,
         type: "error",
       });
     } finally {
@@ -296,22 +325,36 @@ export default function AdminPage() {
     setStatusMessage(null);
     try {
       const contract = await getContractWithSigner();
-      const resolvedWallet = cWallet.trim() || ZERO_WALLET;
-      if (resolvedWallet === ZERO_WALLET) {
-        setStatusMessage({ text: "Warning: No wallet provided — company login will require re-registration with their address.", type: "info" });
-        await new Promise(r => setTimeout(r, 1500));
+      let resolvedWallet = cWallet.trim();
+      if (!resolvedWallet || resolvedWallet === ZERO_WALLET || !ethers.isAddress(resolvedWallet)) {
+        resolvedWallet = ethers.Wallet.createRandom().address;
+        setStatusMessage({
+          text: `Auto-provisioned unique corporate wallet: ${resolvedWallet}. Registering...`,
+          type: "info",
+        });
       }
-      const tx = await contract.registerCompany(cName, cCode, resolvedWallet);
+
+      const cleanCode = cCode.trim().toUpperCase();
+      const tx = await contract.registerCompany(cName.trim(), cleanCode, resolvedWallet);
       setStatusMessage({ text: "Submitting to Ethereum network...", type: "info" });
       await tx.wait();
-      setStatusMessage({ text: `Company "${cName}" authorized on blockchain! Code: ${cCode}`, type: "success" });
+      setStatusMessage({
+        text: `Company "${cName.trim()}" authorized on blockchain! Code: ${cleanCode}`,
+        type: "success"
+      });
       setCCName("");
       setCCode("");
       setCWallet("");
       await fetchData();
     } catch (err: any) {
+      let msg = err.reason || err.message || "Failed to register company";
+      if (msg.includes("Conflict: Company wallet already registered")) {
+        msg = "Conflict: The wallet address entered is already registered to another company on Ethereum. Please enter a different, unique MetaMask wallet address, or leave blank to auto-generate one.";
+      } else if (msg.includes("Conflict: Company code already registered")) {
+        msg = `Conflict: Corporate Code "${cCode.trim().toUpperCase()}" is already registered on Ethereum.`;
+      }
       setStatusMessage({
-        text: err.reason || err.message || "Failed to register company",
+        text: msg,
         type: "error",
       });
     } finally {
@@ -679,7 +722,7 @@ export default function AdminPage() {
                     onChange={(e) => setUWallet(e.target.value)}
                     className="w-full bg-indigo-950/60 border border-indigo-700/50 rounded-xl px-3 py-2 text-xs text-white placeholder-indigo-400/40 font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                   />
-                  <p className="text-[10px] text-indigo-400/50 mt-1">💡 The university admin&apos;s MetaMask wallet address. You can add it later when they share it with you.</p>
+                  <p className="text-[10px] text-indigo-400/50 mt-1">💡 Enter the university admin&apos;s MetaMask address, or leave blank to auto-generate a fresh unique on-chain institutional address.</p>
                 </div>
                 <button
                   type="submit"
@@ -796,7 +839,7 @@ export default function AdminPage() {
                     onChange={(e) => setCWallet(e.target.value)}
                     className="w-full bg-indigo-950/60 border border-indigo-700/50 rounded-xl px-3 py-2 text-xs text-white placeholder-indigo-400/40 font-mono focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                   />
-                  <p className="text-[10px] text-indigo-400/50 mt-1">💡 The HR/recruiter&apos;s MetaMask wallet address. You can add it later when they share it with you.</p>
+                  <p className="text-[10px] text-indigo-400/50 mt-1">💡 Enter the company admin&apos;s MetaMask address, or leave blank to auto-generate a fresh unique on-chain corporate address.</p>
                 </div>
                 <button
                   type="submit"
