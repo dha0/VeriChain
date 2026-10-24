@@ -299,13 +299,18 @@ function getVerifiedDemoCertificateHTML(cid: string) {
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const cid = (searchParams.get("cid") || "").trim();
+  const rawCid = (searchParams.get("cid") || "").trim();
 
-  if (!cid) {
+  if (!rawCid) {
     return NextResponse.json({ error: "Missing IPFS CID parameter" }, { status: 400 });
   }
 
-  const cleanCID = cid.replace("ipfs://", "");
+  const cleanCID = rawCid.replace(/^ipfs:\/\//, "").trim();
+
+  // Security: Strict validation of CID characters to prevent XSS and parameter injection
+  if (!/^[a-zA-Z0-9_-]{20,120}$/.test(cleanCID)) {
+    return NextResponse.json({ error: "Invalid IPFS CID format" }, { status: 400 });
+  }
 
   // If this is the demo degree certificate CID or mock CID, serve the high-fidelity verified certificate
   if (
@@ -320,19 +325,24 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Gateway endpoints to attempt in priority order
+  // Priority gateway list: configured gateway first, then dependable decentralized mirrors
+  const customGateway = process.env.NEXT_PUBLIC_IPFS_GATEWAY || process.env.PINATA_GATEWAY;
+  const primaryGateway = customGateway
+    ? `${customGateway.replace(/\/+$/, "")}/${cleanCID}`
+    : `https://teal-causal-tortoise-675.mypinata.cloud/ipfs/${cleanCID}`;
+
   const gateways = [
-    `https://teal-causal-tortoise-675.mypinata.cloud/ipfs/${cleanCID}`,
+    primaryGateway,
     `https://gateway.pinata.cloud/ipfs/${cleanCID}`,
     `https://dweb.link/ipfs/${cleanCID}`,
     `https://ipfs.io/ipfs/${cleanCID}`,
-    `https://cloudflare-ipfs.com/ipfs/${cleanCID}`,
+    `https://w3s.link/ipfs/${cleanCID}`,
   ];
 
   for (const gatewayUrl of gateways) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000); // 4-second timeout per gateway
+      const timeoutId = setTimeout(() => controller.abort(), 4500);
 
       const res = await fetch(gatewayUrl, {
         signal: controller.signal,
@@ -354,15 +364,17 @@ export async function GET(req: NextRequest) {
             "Content-Disposition": contentType.includes("pdf") || contentType.includes("image")
               ? "inline"
               : `attachment; filename="${cleanCID}"`,
+            "X-Content-Type-Options": "nosniff",
           },
         });
       }
-    } catch (e) {
+    } catch {
       // Continue to next gateway mirror
     }
   }
 
-  // Fallback: Return a clean in-app IPFS Document Dossier viewer
+  // Safe fallback: sanitized in-app IPFS Document Dossier viewer
+  const safeCID = cleanCID.replace(/[&<>"']/g, "");
   return new NextResponse(
     `<!DOCTYPE html>
 <html lang="en">
@@ -438,19 +450,22 @@ export async function GET(req: NextRequest) {
   <div class="card">
     <div class="badge">✓ Verified On-Chain CID Anchor</div>
     <h1>Decentralized IPFS Document</h1>
-    <p>This credential document is permanently anchored to the Ethereum blockchain with immutable cryptographic integrity.</p>
-    <div class="cid-box">${cleanCID}</div>
+    <p>This credential document is permanently anchored to Ethereum. If the gateways are currently syncing, you can inspect it through the mirrors below.</p>
+    <div class="cid-box">${safeCID}</div>
     <div class="mirrors">
-      <a class="link-btn" href="https://teal-causal-tortoise-675.mypinata.cloud/ipfs/${cleanCID}" target="_blank">Open via Dedicated Gateway (teal-causal-tortoise-675.mypinata.cloud)</a>
-      <a class="link-btn" href="https://dweb.link/ipfs/${cleanCID}" target="_blank">Open via DWeb.link Gateway</a>
-      <a class="link-btn" href="https://ipfs.io/ipfs/${cleanCID}" target="_blank">Open via IPFS.io Gateway</a>
-      <a class="link-btn" href="https://cloudflare-ipfs.com/ipfs/${cleanCID}" target="_blank">Open via Cloudflare IPFS Gateway</a>
+      <a class="link-btn" href="${primaryGateway}" target="_blank" rel="noopener noreferrer">Open via Configured Gateway</a>
+      <a class="link-btn" href="https://gateway.pinata.cloud/ipfs/${safeCID}" target="_blank" rel="noopener noreferrer">Open via Pinata Cloud Gateway</a>
+      <a class="link-btn" href="https://dweb.link/ipfs/${safeCID}" target="_blank" rel="noopener noreferrer">Open via DWeb.link Gateway</a>
+      <a class="link-btn" href="https://ipfs.io/ipfs/${safeCID}" target="_blank" rel="noopener noreferrer">Open via IPFS.io Gateway</a>
     </div>
   </div>
 </body>
 </html>`,
     {
-      headers: { "Content-Type": "text/html; charset=utf-8" },
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      },
     }
   );
 }

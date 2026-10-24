@@ -106,8 +106,28 @@ export async function POST(req: NextRequest) {
       );
       const receipt = await tx.wait();
 
+      let newCredId = 0;
+      try {
+        for (const log of receipt.logs || []) {
+          try {
+            const parsed = contract.interface.parseLog(log);
+            if (parsed && parsed.name === "CredentialIssued") {
+              newCredId = Number(parsed.args[0]);
+              break;
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
+
+      if (!newCredId) {
+        try {
+          newCredId = Number(await contract.credentialCounter());
+        } catch (e) {}
+      }
+
       return NextResponse.json({
         success: true,
+        credentialId: newCredId,
         txHash: receipt.hash,
       });
     }

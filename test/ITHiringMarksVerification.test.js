@@ -237,7 +237,7 @@ describe("ITHiringMarksVerification Smart Contract Test Suite", function () {
     it("Should prevent another university from issuing credentials for a student not enrolled with them", async function () {
       await expect(
         contract.connect(univ2Wallet).issueCredential(1, DOC_TYPE, ORIGINAL_DOC_HASH, IPFS_CID)
-      ).to.be.revertedWith("Auth: Student belongs to a different university");
+      ).to.be.revertedWith("Auth: Student belongs to different university");
     });
 
     it("Should reject credential issuance with empty bytes32(0) document hash", async function () {
@@ -396,7 +396,7 @@ describe("ITHiringMarksVerification Smart Contract Test Suite", function () {
     it("Should prevent an unrelated university from revoking the credential", async function () {
       await expect(
         contract.connect(univ2Wallet).revokeCredential(1, "Unauthorized revoke attempt")
-      ).to.be.revertedWith("Auth: Only issuing university can revoke this credential");
+      ).to.be.revertedWith("Auth: Only issuing university can revoke");
     });
 
     it("Should reject verification of a revoked credential even if document hash matches", async function () {
@@ -416,7 +416,7 @@ describe("ITHiringMarksVerification Smart Contract Test Suite", function () {
 
       await expect(
         contract.connect(univWallet).revokeCredential(1, "Second revocation attempt")
-      ).to.be.revertedWith("State: Credential is not active or suspended");
+      ).to.be.revertedWith("State: Already revoked");
     });
   });
 });

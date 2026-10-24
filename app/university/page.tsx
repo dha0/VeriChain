@@ -28,7 +28,17 @@ import {
   FileText,
   Clock,
   ShieldCheck,
+  QrCode,
+  Eye,
+  Sparkles,
 } from "lucide-react";
+import * as XLSX from "xlsx";
+import {
+  generateMarksheetPDF,
+  downloadPDFFile,
+  getDefaultSubjectsForCourse,
+  SubjectMark,
+} from "@/lib/pdfGenerator";
 import {
   getContractReadOnly,
   getContractWithSigner,
@@ -50,7 +60,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { RoleGuard } from "@/components/RoleGuard";
 import { useAuth } from "@/context/AuthContext";
 
-type ActiveTab = "single" | "bulk" | "achievements" | "credentials";
+type ActiveTab = "single" | "generate" | "bulk" | "achievements" | "credentials";
 
 export default function UniversityPage() {
   const { entityInfo } = useAuth();
@@ -83,11 +93,45 @@ export default function UniversityPage() {
   const [generatedSecretKey, setGeneratedSecretKey] = useState<string | null>(null);
   const [isIssuingCred, setIsIssuingCred] = useState(false);
 
-  // Bulk CSV Upload States
+  // Marksheet & QR Generator States
+  const [genStudentId, setGenStudentId] = useState("");
+  const [genUsn, setGenUsn] = useState("");
+  const [genName, setGenName] = useState("");
+  const [genCourse, setGenCourse] = useState("Computer Science & Engineering");
+  const [genGradYear, setGenGradYear] = useState(2026);
+  const [genPercentage, setGenPercentage] = useState(88);
+  const [genDocType, setGenDocType] = useState("Academic Marksheet");
+  const [genSemester, setGenSemester] = useState("7th Semester / Final Examination");
+  const [genSubjects, setGenSubjects] = useState<SubjectMark[]>(() =>
+    getDefaultSubjectsForCourse("Computer Science & Engineering", 88)
+  );
+  const [isGeneratingMarksheet, setIsGeneratingMarksheet] = useState(false);
+  const [lastIssuedPDFResult, setLastIssuedPDFResult] = useState<{
+    pdfBytes: Uint8Array;
+    fileName: string;
+    credentialId?: number;
+    txHash?: string;
+    cid?: string;
+    docHash?: string;
+    studentName: string;
+    usn: string;
+  } | null>(null);
+
+  // Bulk CSV/Excel Upload States
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvParsedRows, setCsvParsedRows] = useState<CSVStudentRow[]>([]);
   const [isProcessingBulk, setIsProcessingBulk] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
+  const [bulkResults, setBulkResults] = useState<{
+    usn: string;
+    name: string;
+    studentId: number;
+    credentialId?: number;
+    cid?: string;
+    status: "success" | "error";
+    error?: string;
+    pdfBytes?: Uint8Array;
+  }[]>([]);
 
   // Student Achievements Review State
   const [pendingAchievements, setPendingAchievements] = useState<Achievement[]>([]);
@@ -310,7 +354,7 @@ export default function UniversityPage() {
     }
   };
 
-  // CSV Template Downloader
+  // CSV / Excel Template Downloader
   const downloadCsvTemplate = () => {
     const csvContent =
       "usn,name,course,graduationYear,percentage,documentType,gradeRemark\n" +
@@ -328,60 +372,136 @@ export default function UniversityPage() {
     document.body.removeChild(link);
   };
 
-  // Parse CSV File Client-Side
-  const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Parse CSV or Excel (.xlsx, .xls) File Client-Side using SheetJS
+  const handleCsvFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       setCsvFile(file);
+      setBulkResults([]);
 
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        const text = evt.target?.result as string;
-        if (!text) return;
+      try {
+        const buffer = await file.arrayBuffer();
+        const wb = XLSX.read(buffer, { type: "array" });
+        const firstSheetName = wb.SheetNames[0];
+        const rawJson: any[] = XLSX.utils.sheet_to_json(wb.Sheets[firstSheetName]);
 
-        const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-        if (lines.length < 2) return;
+        const rows: CSVStudentRow[] = rawJson
+          .map((row: any) => {
+            const keys = Object.keys(row);
+            const getVal = (target: string) => {
+              const foundKey = keys.find((k) => k.trim().toLowerCase() === target.toLowerCase());
+              return foundKey !== undefined ? row[foundKey] : undefined;
+            };
 
-        const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
-        const rows: CSVStudentRow[] = [];
+            const usnVal = String(getVal("usn") || getVal("seatno") || getVal("rollno") || "").trim();
+            const nameVal = String(getVal("name") || getVal("studentname") || getVal("candidatename") || "").trim();
+            const courseVal = String(
+              getVal("course") || getVal("branch") || getVal("program") || "Computer Science & Engineering"
+            ).trim();
+            const gradYearVal =
+              parseInt(String(getVal("graduationyear") || getVal("gradyear") || getVal("batch") || 2026)) || 2026;
+            const pctVal =
+              parseFloat(String(getVal("percentage") || getVal("marks") || getVal("score") || 85)) || 85;
+            const docTypeVal = String(getVal("documenttype") || getVal("doctype") || "Academic Marksheet").trim();
+            const remarkVal = String(
+              getVal("graderemark") ||
+                getVal("remark") ||
+                getVal("distinction") ||
+                (pctVal >= 75 ? "First Class with Distinction" : "First Class")
+            ).trim();
 
-        for (let i = 1; i < lines.length; i++) {
-          const parts = lines[i].split(",").map((p) => p.trim());
-          if (parts.length >= 5) {
-            rows.push({
-              usn: parts[0] || "",
-              name: parts[1] || "",
-              course: parts[2] || "Computer Science & Engineering",
-              gradYear: parseInt(parts[3]) || 2025,
-              graduationYear: parseInt(parts[3]) || 2025,
-              percentage: parseInt(parts[4]) || 85,
-              documentType: parts[5] || "Degree Certificate",
-              gradeRemark: parts[6] || "Verified Academic Record",
-            });
-          }
+            return {
+              usn: usnVal,
+              name: nameVal,
+              course: courseVal,
+              gradYear: gradYearVal,
+              graduationYear: gradYearVal,
+              percentage: pctVal,
+              documentType: docTypeVal,
+              gradeRemark: remarkVal,
+            };
+          })
+          .filter((r) => r.usn && r.name);
+
+        if (rows.length === 0) {
+          alert("No valid student rows found. Please check columns: usn, name, course, graduationYear, percentage");
+          return;
         }
+
         setCsvParsedRows(rows);
-      };
-      reader.readAsText(file);
+      } catch (err: any) {
+        alert("Failed to parse spreadsheet: " + err.message);
+      }
     }
   };
 
-  // Process Bulk CSV Upload: Reads each row, creates files separately, pins separately, and anchors on Ethereum
-  const handleProcessBulkUpload = async () => {
-    if (csvParsedRows.length === 0) return;
+  // Auto-fill Syllabus & Course subjects for the Marksheet Generator
+  const handleAutoFillSyllabus = () => {
+    const list = getDefaultSubjectsForCourse(genCourse, genPercentage);
+    setGenSubjects(list);
+  };
 
-    setIsProcessingBulk(true);
+  // Preview & Download Marksheet PDF without minting
+  const handlePreviewAndDownloadPDF = async () => {
+    if (!genUsn.trim() || !genName.trim()) {
+      alert("Please enter candidate USN and Name first.");
+      return;
+    }
+    setIsGeneratingMarksheet(true);
+    try {
+      const origin =
+        typeof window !== "undefined"
+          ? window.location.origin
+          : "https://blockchain-document-verification-one.vercel.app";
+      const verifyUrl = `${origin}/verify?usn=${encodeURIComponent(genUsn.trim().toUpperCase())}`;
+
+      const pdfBytes = await generateMarksheetPDF({
+        universityName: currentUnivName,
+        universityCode: currentUnivCode,
+        studentName: genName.trim(),
+        usn: genUsn.trim().toUpperCase(),
+        course: genCourse,
+        graduationYear: genGradYear,
+        percentage: genPercentage,
+        semester: genSemester,
+        documentType: genDocType,
+        academicDistinction:
+          genPercentage >= 75 ? "FIRST CLASS WITH DISTINCTION" : "FIRST CLASS",
+        verificationUrl: verifyUrl,
+        subjects: genSubjects,
+      });
+
+      downloadPDFFile(pdfBytes, `${genUsn.trim().toUpperCase()}_marksheet_preview.pdf`);
+    } catch (err: any) {
+      alert("Failed to generate PDF preview: " + err.message);
+    } finally {
+      setIsGeneratingMarksheet(false);
+    }
+  };
+
+  // Generate High-Fidelity PDF with QR & Anchor directly to Ethereum & IPFS
+  const handleGenerateAndAnchorMarksheet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!genUsn.trim() || !genName.trim()) {
+      alert("Please enter candidate USN and Name.");
+      return;
+    }
+
+    setIsGeneratingMarksheet(true);
     setStatusMessage({
-      text: `Starting decentralized batch processing for ${csvParsedRows.length} students...`,
+      text: `Generating official ${genDocType} PDF with embedded blockchain verification QR code...`,
       type: "info",
     });
 
     try {
-      for (let i = 0; i < csvParsedRows.length; i++) {
-        const row = csvParsedRows[i];
-        setBulkProgress({ current: i + 1, total: csvParsedRows.length });
+      // 1. Resolve or Register Student
+      let studentId = Number(genStudentId);
+      if (!studentId || isNaN(studentId)) {
+        setStatusMessage({
+          text: `Ensuring student ${genName} (${genUsn}) is enrolled on Ethereum...`,
+          type: "info",
+        });
 
-        // 1. Register student on-chain
         const regRes = await fetch("/api/blockchain/relay", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -389,72 +509,252 @@ export default function UniversityPage() {
             action: "registerStudent",
             universityCode: currentUnivCode,
             data: {
-              usn: row.usn,
-              name: row.name,
-              course: row.course,
-              gradYear: row.graduationYear,
-              percentage: row.percentage,
+              usn: genUsn.trim().toUpperCase(),
+              name: genName.trim(),
+              course: genCourse,
+              gradYear: genGradYear,
+              percentage: genPercentage,
             },
           }),
         });
+
         const regData = await regRes.json();
-        const studentId = regData.studentId || i + 1;
-
-        // 2. Generate individual student certificate document content
-        const certificateDocumentText = `
-================================================================================
-                    OFFICIAL ACCREDITED ACADEMIC CREDENTIAL
-================================================================================
-Issuing University:   ${currentUnivName} (${currentUnivCode})
-Candidate Full Name:  ${row.name}
-University Seat No:   ${row.usn}
-Academic Program:     ${row.course}
-Graduation Year:      ${row.graduationYear}
-Cumulative Score:     ${row.percentage}%
-Document Type:        ${row.documentType || "Degree Certificate"}
-Academic Distinction: ${row.gradeRemark || "Verified First Class"}
-Timestamp:            ${new Date().toISOString()}
-Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
-================================================================================
-`;
-        const blob = new Blob([certificateDocumentText], { type: "text/plain" });
-        const studentDocFile = new File([blob], `${row.usn}_${(row.documentType || "degree").replace(/\s+/g, "_")}.txt`, {
-          type: "text/plain",
-        });
-
-        // 3. Compute separate SHA-256 hash
-        const docHash = await computeSHA256(studentDocFile);
-
-        // 4. Pin separate file to IPFS
-        const { cid } = await uploadToIPFS(studentDocFile);
-
-        // 5. Issue credential proof separately on-chain
-        await fetch("/api/blockchain/relay", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "issueCredential",
-            universityCode: currentUnivCode,
-            data: {
-              studentId,
-              documentType: row.documentType || "Degree Certificate",
-              documentHash: docHash,
-              ipfsCID: cid,
-            },
-          }),
-        });
+        if (!regRes.ok || !regData.studentId) {
+          throw new Error(regData.error || "Failed to register student on blockchain");
+        }
+        studentId = Number(regData.studentId);
+        setGenStudentId(String(studentId));
       }
 
+      // 2. Build live verification URL
+      const origin =
+        typeof window !== "undefined"
+          ? window.location.origin
+          : "https://blockchain-document-verification-one.vercel.app";
+      const verifyUrl = `${origin}/verify?usn=${encodeURIComponent(genUsn.trim().toUpperCase())}`;
+
+      // 3. Generate high-fidelity PDF with embedded verification QR code
       setStatusMessage({
-        text: `Successfully processed ${csvParsedRows.length} student records! Each student file was generated, hashed, pinned to IPFS, and anchored separately on Ethereum.`,
+        text: `Compiling academic transcript and generating embedded QR verification seal...`,
+        type: "info",
+      });
+
+      const pdfBytes = await generateMarksheetPDF({
+        universityName: currentUnivName,
+        universityCode: currentUnivCode,
+        studentName: genName.trim(),
+        usn: genUsn.trim().toUpperCase(),
+        course: genCourse,
+        graduationYear: genGradYear,
+        percentage: genPercentage,
+        semester: genSemester,
+        documentType: genDocType,
+        academicDistinction:
+          genPercentage >= 75 ? "FIRST CLASS WITH DISTINCTION" : "FIRST CLASS",
+        verificationUrl: verifyUrl,
+        subjects: genSubjects,
+      });
+
+      // 4. Create File and Compute Cryptographic SHA-256 Fingerprint
+      const fileName = `${genUsn.trim().toUpperCase()}_official_${genDocType.replace(/\s+/g, "_")}.pdf`;
+      const pdfFile = new File([pdfBytes as any], fileName, {
+        type: "application/pdf",
+      });
+      const docHash = await computeSHA256(pdfFile);
+
+      // 5. Pin real PDF document payload to Pinata IPFS
+      setStatusMessage({
+        text: `Pinning official PDF document (${(pdfBytes.length / 1024).toFixed(1)} KB) to decentralized IPFS...`,
+        type: "info",
+      });
+      const { cid } = await uploadToIPFS(pdfFile);
+
+      // 6. Anchor to Ethereum smart contract via relayer
+      setStatusMessage({
+        text: `Anchoring SHA-256 fingerprint (${docHash.slice(0, 10)}...) on Ethereum Sepolia...`,
+        type: "info",
+      });
+
+      const issueRes = await fetch("/api/blockchain/relay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "issueCredential",
+          universityCode: currentUnivCode,
+          data: {
+            studentId,
+            documentType: genDocType,
+            documentHash: docHash,
+            ipfsCID: cid,
+          },
+        }),
+      });
+
+      const issueData = await issueRes.json();
+      if (!issueRes.ok) {
+        throw new Error(issueData.error || "Failed to anchor credential proof on ledger");
+      }
+
+      const credId = issueData.credentialId || undefined;
+
+      setLastIssuedPDFResult({
+        pdfBytes,
+        fileName,
+        credentialId: credId,
+        txHash: issueData.txHash,
+        cid,
+        docHash,
+        studentName: genName.trim(),
+        usn: genUsn.trim().toUpperCase(),
+      });
+
+      setStatusMessage({
+        text: `Success! ${genDocType} generated with embedded QR and permanently anchored to Ethereum! Credential #${credId || "Mined"} | IPFS: ${cid}`,
         type: "success",
       });
-      setCsvParsedRows([]);
-      setCsvFile(null);
+
       await loadUniversityData();
     } catch (err: any) {
       setStatusMessage({
-        text: "Bulk upload stopped: " + (err.message || "Relayer error"),
+        text: err.message || "Failed to generate and anchor marksheet",
+        type: "error",
+      });
+    } finally {
+      setIsGeneratingMarksheet(false);
+    }
+  };
+
+  // Process Bulk CSV/Excel Upload: Creates individual authentic PDFs with QR, pins separately, and anchors on Ethereum
+  const handleProcessBulkUpload = async () => {
+    if (csvParsedRows.length === 0) return;
+
+    setIsProcessingBulk(true);
+    setStatusMessage({
+      text: `Starting decentralized batch processing for ${csvParsedRows.length} students... Generating official PDF marksheets with embedded QR codes & anchoring to Ethereum.`,
+      type: "info",
+    });
+
+    const results: {
+      usn: string;
+      name: string;
+      studentId: number;
+      credentialId?: number;
+      cid?: string;
+      status: "success" | "error";
+      error?: string;
+      pdfBytes?: Uint8Array;
+    }[] = [];
+
+    try {
+      for (let i = 0; i < csvParsedRows.length; i++) {
+        const row = csvParsedRows[i];
+        setBulkProgress({ current: i + 1, total: csvParsedRows.length });
+
+        try {
+          // 1. Register student on-chain
+          const regRes = await fetch("/api/blockchain/relay", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "registerStudent",
+              universityCode: currentUnivCode,
+              data: {
+                usn: row.usn,
+                name: row.name,
+                course: row.course,
+                gradYear: row.graduationYear,
+                percentage: row.percentage,
+              },
+            }),
+          });
+          const regData = await regRes.json();
+          if (!regRes.ok || !regData.studentId) {
+            throw new Error(regData.error || `Student registration failed for ${row.usn}`);
+          }
+          const studentId = Number(regData.studentId);
+
+          // 2. Build verify QR URL pointing to /verify?usn=...
+          const origin =
+            typeof window !== "undefined"
+              ? window.location.origin
+              : "https://blockchain-document-verification-one.vercel.app";
+          const verifyUrl = `${origin}/verify?usn=${encodeURIComponent(row.usn.toUpperCase())}`;
+
+          // 3. Generate high-fidelity official PDF with embedded QR code
+          const pdfBytes = await generateMarksheetPDF({
+            universityName: currentUnivName,
+            universityCode: currentUnivCode,
+            studentName: row.name,
+            usn: row.usn,
+            course: row.course,
+            graduationYear: row.graduationYear || new Date().getFullYear(),
+            percentage: row.percentage,
+            documentType: row.documentType || "Academic Marksheet",
+            academicDistinction:
+              row.gradeRemark || (row.percentage >= 75 ? "FIRST CLASS WITH DISTINCTION" : "FIRST CLASS"),
+            verificationUrl: verifyUrl,
+          });
+
+          // 4. Create File and Compute SHA-256
+          const pdfFile = new File([pdfBytes as any], `${row.usn}_official_marksheet.pdf`, {
+            type: "application/pdf",
+          });
+          const docHash = await computeSHA256(pdfFile);
+
+          // 5. Pin real PDF to Pinata IPFS
+          const { cid } = await uploadToIPFS(pdfFile);
+
+          // 6. Anchor credential proof separately on-chain
+          const issueRes = await fetch("/api/blockchain/relay", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "issueCredential",
+              universityCode: currentUnivCode,
+              data: {
+                studentId,
+                documentType: row.documentType || "Academic Marksheet",
+                documentHash: docHash,
+                ipfsCID: cid,
+              },
+            }),
+          });
+          const issueData = await issueRes.json();
+          if (!issueRes.ok) {
+            throw new Error(issueData.error || "Failed to anchor credential proof on ledger");
+          }
+
+          results.push({
+            usn: row.usn,
+            name: row.name,
+            studentId,
+            credentialId: issueData.credentialId,
+            cid,
+            status: "success",
+            pdfBytes,
+          });
+        } catch (rowErr: any) {
+          console.error(`Row ${i + 1} (${row.usn}) failed:`, rowErr);
+          results.push({
+            usn: row.usn,
+            name: row.name,
+            studentId: 0,
+            status: "error",
+            error: rowErr.message || "Failed processing record",
+          });
+        }
+      }
+
+      setBulkResults(results);
+      const successCount = results.filter((r) => r.status === "success").length;
+      setStatusMessage({
+        text: `Batch complete: ${successCount} of ${csvParsedRows.length} students processed! Each received an authentic PDF marksheet with embedded QR code anchored on Ethereum & IPFS.`,
+        type: successCount === csvParsedRows.length ? "success" : "info",
+      });
+      await loadUniversityData();
+    } catch (err: any) {
+      setStatusMessage({
+        text: "Bulk upload error: " + (err.message || "Relayer error"),
         type: "error",
       });
     } finally {
@@ -564,6 +864,18 @@ Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
           </button>
 
           <button
+            onClick={() => setActiveTab("generate")}
+            className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              activeTab === "generate"
+                ? "bg-gradient-to-r from-sky-600 via-indigo-600 to-blue-600 text-white shadow-md shadow-sky-600/30"
+                : "bg-slate-900/60 text-slate-400 hover:text-white border border-slate-800"
+            }`}
+          >
+            <QrCode className="w-4 h-4 text-sky-300" />
+            <span>Official Marksheet & QR Generator</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab("bulk")}
             className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
               activeTab === "bulk"
@@ -572,7 +884,7 @@ Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
             }`}
           >
             <FileSpreadsheet className="w-4 h-4" />
-            <span>Bulk CSV File Upload</span>
+            <span>Bulk CSV / Excel Upload</span>
           </button>
 
           <button
@@ -796,17 +1108,387 @@ Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
           </div>
         )}
 
-        {/* TAB 2: Bulk CSV Upload & Batch Processor */}
+        {/* TAB 2: Official Marksheet & Dynamic QR Generator */}
+        {activeTab === "generate" && (
+          <div className="space-y-6">
+            {/* Success Card from recent issuance */}
+            {lastIssuedPDFResult && (
+              <div className="glass-panel rounded-3xl p-6 border-2 border-emerald-500/40 bg-emerald-950/20 shadow-xl shadow-emerald-950/30 space-y-4 animate-in fade-in duration-300">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-emerald-500/20 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/40">
+                      <CheckCircle2 className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h4 className="text-base font-bold text-white flex items-center gap-2">
+                        <span>Official Marksheet Successfully Anchored on Ethereum!</span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 font-mono">
+                          #{lastIssuedPDFResult.credentialId ? `Cred #${lastIssuedPDFResult.credentialId}` : "Mined"}
+                        </span>
+                      </h4>
+                      <p className="text-xs text-emerald-200/80 mt-0.5">
+                        Issued for <strong className="text-white">{lastIssuedPDFResult.studentName}</strong> ({lastIssuedPDFResult.usn}) with embedded on-chain verification QR code.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadPDFFile(lastIssuedPDFResult.pdfBytes, lastIssuedPDFResult.fileName)
+                      }
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-2 transition-all shadow-lg shadow-emerald-600/30"
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>Download Issued Official PDF</span>
+                    </button>
+
+                    <a
+                      href={`/verify?usn=${encodeURIComponent(lastIssuedPDFResult.usn)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-sky-300 hover:text-white border border-sky-600/40 font-semibold text-xs flex items-center gap-1.5 transition-colors"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Verify on Blockchain</span>
+                    </a>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
+                  <div className="p-3 rounded-xl bg-slate-950/80 border border-emerald-500/20 space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-sans font-semibold">
+                      Cryptographic SHA-256 Hash
+                    </span>
+                    <p className="text-emerald-300 truncate font-mono text-[11px]" title={lastIssuedPDFResult.docHash}>
+                      {lastIssuedPDFResult.docHash}
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950/80 border border-emerald-500/20 space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-sans font-semibold">
+                      Decentralized IPFS CID
+                    </span>
+                    <p className="text-sky-300 truncate font-mono text-[11px]" title={lastIssuedPDFResult.cid}>
+                      {lastIssuedPDFResult.cid}
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950/80 border border-emerald-500/20 space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-sans font-semibold">
+                      Transaction Hash
+                    </span>
+                    <p className="text-purple-300 truncate font-mono text-[11px]" title={lastIssuedPDFResult.txHash}>
+                      {lastIssuedPDFResult.txHash || "Recorded on Sepolia"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Main Generator Form */}
+            <div className="glass-panel rounded-3xl p-6 space-y-6 border border-sky-500/20 bg-slate-900/60 shadow-xl">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-sky-900/30 pb-4">
+                <div className="space-y-1">
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <QrCode className="w-5 h-5 text-sky-400" />
+                    <span>Official Marksheet & QR Verification Seal Generator</span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Compile high-fidelity academic marksheets & transcripts with auto-calculated CGPAs, client-side cryptographic SHA-256 fingerprints, and embedded dynamic QR codes pointing to live blockchain verification dossiers.
+                  </p>
+                </div>
+
+                {students.length > 0 && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-slate-400 font-semibold text-[11px]">Enrolled Student:</span>
+                    <select
+                      value={genStudentId}
+                      onChange={(e) => {
+                        const sId = e.target.value;
+                        setGenStudentId(sId);
+                        const found = students.find((s) => String(s.id) === sId);
+                        if (found) {
+                          setGenUsn(found.usn);
+                          setGenName(found.name);
+                          setGenCourse(found.course);
+                          setGenGradYear(found.graduationYear);
+                          setGenPercentage(found.percentage);
+                          setGenSubjects(getDefaultSubjectsForCourse(found.course, found.percentage));
+                        }
+                      }}
+                      className="bg-slate-950 border border-sky-700/60 rounded-xl px-3 py-1.5 text-xs text-sky-200 focus:border-sky-500 font-mono"
+                    >
+                      <option value="">-- Autofill from Student Registry --</option>
+                      {students.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          #{s.id} {s.usn} - {s.name} ({s.percentage}%)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <form onSubmit={handleGenerateAndAnchorMarksheet} className="space-y-6">
+                {/* Candidate Particulars Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-4 rounded-2xl bg-slate-950/70 border border-slate-800">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      University Seat No (USN) *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. 1RV21CS001"
+                      value={genUsn}
+                      onChange={(e) => setGenUsn(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500 uppercase font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Candidate Full Name *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Rahul Sharma"
+                      value={genName}
+                      onChange={(e) => setGenName(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Degree & Branch *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={genCourse}
+                      onChange={(e) => setGenCourse(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Graduation Batch Year
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      min={1990}
+                      max={2100}
+                      value={genGradYear}
+                      onChange={(e) => setGenGradYear(Number(e.target.value))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Aggregate Percentage (%)
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      min={40}
+                      max={100}
+                      value={genPercentage}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setGenPercentage(val);
+                        setGenSubjects(getDefaultSubjectsForCourse(genCourse, val));
+                      }}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-emerald-400 font-bold focus:border-sky-500 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Calculated CGPA (Scale of 10)
+                    </label>
+                    <div className="w-full bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-cyan-300 font-bold">
+                      {(genPercentage / 9.5).toFixed(2)} / 10.00
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Document Title Type
+                    </label>
+                    <select
+                      value={genDocType}
+                      onChange={(e) => setGenDocType(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500"
+                    >
+                      <option value="Academic Marksheet">Academic Marksheet</option>
+                      <option value="Degree Certificate">Degree Certificate</option>
+                      <option value="Consolidated Transcript">Consolidated Transcript</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Academic Semester / Exam
+                    </label>
+                    <input
+                      type="text"
+                      value={genSemester}
+                      onChange={(e) => setGenSemester(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Course Subjects Table */}
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-sky-400" />
+                      Course Subjects & Marks Breakdown ({genSubjects.length} Courses)
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={handleAutoFillSyllabus}
+                      className="px-3 py-1.5 rounded-lg bg-sky-900/40 hover:bg-sky-800/60 text-sky-300 border border-sky-600/40 text-[11px] font-semibold flex items-center gap-1.5 transition-colors"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Auto-Calibrate Subject Marks for {genPercentage}%</span>
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto border border-slate-800 rounded-2xl max-h-64">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                        <tr>
+                          <th className="px-3 py-2">#</th>
+                          <th className="px-3 py-2">Subject Code</th>
+                          <th className="px-3 py-2">Course / Subject Title</th>
+                          <th className="px-3 py-2">Credits</th>
+                          <th className="px-3 py-2">Max</th>
+                          <th className="px-3 py-2">Marks Scored</th>
+                          <th className="px-3 py-2">Grade</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800 font-mono text-slate-300">
+                        {genSubjects.map((sub, idx) => (
+                          <tr key={idx} className="hover:bg-slate-950/40">
+                            <td className="px-3 py-2 text-slate-500">{idx + 1}</td>
+                            <td className="px-3 py-2">
+                              <input
+                                type="text"
+                                value={sub.code}
+                                onChange={(e) => {
+                                  const updated = [...genSubjects];
+                                  updated[idx].code = e.target.value;
+                                  setGenSubjects(updated);
+                                }}
+                                className="w-20 bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-xs text-sky-300 uppercase font-mono"
+                              />
+                            </td>
+                            <td className="px-3 py-2 font-sans font-medium text-white">
+                              <input
+                                type="text"
+                                value={sub.title}
+                                onChange={(e) => {
+                                  const updated = [...genSubjects];
+                                  updated[idx].title = e.target.value;
+                                  setGenSubjects(updated);
+                                }}
+                                className="w-full bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-xs text-slate-200"
+                              />
+                            </td>
+                            <td className="px-3 py-2">
+                              <input
+                                type="number"
+                                min={1}
+                                max={10}
+                                value={sub.credits}
+                                onChange={(e) => {
+                                  const updated = [...genSubjects];
+                                  updated[idx].credits = Number(e.target.value);
+                                  setGenSubjects(updated);
+                                }}
+                                className="w-12 bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-xs text-slate-300 text-center"
+                              />
+                            </td>
+                            <td className="px-3 py-2 text-slate-500">100</td>
+                            <td className="px-3 py-2">
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                value={sub.marksObtained}
+                                onChange={(e) => {
+                                  const updated = [...genSubjects];
+                                  const marks = Number(e.target.value);
+                                  updated[idx].marksObtained = marks;
+                                  if (marks >= 90) updated[idx].grade = "O";
+                                  else if (marks >= 80) updated[idx].grade = "A+";
+                                  else if (marks >= 70) updated[idx].grade = "A";
+                                  else if (marks >= 60) updated[idx].grade = "B+";
+                                  else updated[idx].grade = "B";
+                                  setGenSubjects(updated);
+                                }}
+                                className="w-14 bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-xs text-emerald-400 font-bold text-center"
+                              />
+                            </td>
+                            <td className="px-3 py-2 font-bold text-emerald-400">{sub.grade}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Actions: Preview & Live On-Chain Issuance */}
+                <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    disabled={isGeneratingMarksheet}
+                    onClick={handlePreviewAndDownloadPDF}
+                    className="w-full sm:w-auto px-5 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center justify-center gap-2 border border-slate-700 transition-colors"
+                  >
+                    <Eye className="w-4 h-4 text-sky-400" />
+                    <span>👁️ Preview & Download Marksheet PDF</span>
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isGeneratingMarksheet}
+                    className="w-full sm:flex-1 py-3 px-6 rounded-xl bg-gradient-to-r from-sky-600 via-indigo-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 disabled:opacity-50 text-white font-bold text-xs transition-all shadow-lg shadow-sky-600/30 flex items-center justify-center gap-2"
+                  >
+                    <QrCode className="w-4 h-4" />
+                    <span>
+                      {isGeneratingMarksheet
+                        ? "Generating PDF with QR, Pinning to IPFS & Anchoring on Ethereum..."
+                        : "🚀 Generate Official PDF with Embedded QR & Anchor on Ethereum (1-Click)"}
+                    </span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: Bulk CSV / Excel Upload & Batch Processor */}
         {activeTab === "bulk" && (
           <div className="glass-panel rounded-3xl p-6 space-y-6 border border-sky-500/20 bg-slate-900/60 shadow-xl">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-sky-900/30 pb-4">
               <div className="space-y-1">
                 <h3 className="text-base font-bold text-white flex items-center gap-2">
                   <FileSpreadsheet className="w-5 h-5 text-sky-400" />
-                  <span>Bulk Student CSV Parsing & Separate File Anchoring</span>
+                  <span>Bulk Student CSV / Excel Parsing & Automated PDF Generation</span>
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Upload a CSV file containing multiple students. The website parses the contents, creates separate digital certificates for each student, computes individual SHA-256 hashes, pins files separately to IPFS, and permanently registers each student on Ethereum.
+                  Upload a spreadsheet (.csv, .xlsx, .xls) containing multiple student records. VeriChain generates individual authentic PDF marksheets with embedded blockchain QR codes, computes separate SHA-256 fingerprints, pins files to IPFS, and permanently anchors each record on Ethereum.
                 </p>
               </div>
 
@@ -816,15 +1498,15 @@ Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
                 className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 text-xs font-semibold flex items-center gap-2 border border-slate-700 transition-colors shrink-0"
               >
                 <Download className="w-4 h-4" />
-                <span>Download Sample CSV Template</span>
+                <span>Download Sample Template</span>
               </button>
             </div>
 
-            {/* CSV File Input */}
+            {/* CSV / Excel File Input */}
             <div className="border-2 border-dashed border-sky-700/50 hover:border-sky-500 rounded-3xl p-8 text-center bg-slate-950/60 transition-colors">
               <input
                 type="file"
-                accept=".csv,text/csv,text/plain"
+                accept=".csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                 onChange={handleCsvFileChange}
                 className="hidden"
                 id="bulkCsvInput"
@@ -835,7 +1517,7 @@ Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-white">
-                    {csvFile ? csvFile.name : "Select or Drop Student Records CSV File"}
+                    {csvFile ? csvFile.name : "Select or Drop Student Records Spreadsheet (CSV or Excel .xlsx)"}
                   </p>
                   <p className="text-xs text-slate-400 mt-1">
                     Supports columns: <code>usn, name, course, graduationYear, percentage, documentType</code>
@@ -843,6 +1525,77 @@ Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
                 </div>
               </label>
             </div>
+
+            {/* Bulk Results Table from recent run */}
+            {bulkResults.length > 0 && (
+              <div className="space-y-3 p-4 rounded-2xl bg-slate-950 border border-slate-800">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    Batch Processing Ledger Records ({bulkResults.length} Processed)
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto max-h-64 border border-slate-800 rounded-xl">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-900 text-slate-400 uppercase text-[10px]">
+                      <tr>
+                        <th className="px-3 py-2">USN</th>
+                        <th className="px-3 py-2">Name</th>
+                        <th className="px-3 py-2">Credential</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800 font-mono">
+                      {bulkResults.map((res, i) => (
+                        <tr key={i} className="hover:bg-slate-900/40">
+                          <td className="px-3 py-2 font-bold text-sky-300">{res.usn}</td>
+                          <td className="px-3 py-2 font-sans text-white">{res.name}</td>
+                          <td className="px-3 py-2 text-purple-300">
+                            {res.credentialId ? `#${res.credentialId}` : "-"}
+                          </td>
+                          <td className="px-3 py-2 font-sans">
+                            {res.status === "success" ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                ✅ Minted & Anchored
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-rose-500/20 text-rose-300 border border-rose-500/30" title={res.error}>
+                                ❌ Failed
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right font-sans">
+                            {res.pdfBytes && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  downloadPDFFile(res.pdfBytes!, `${res.usn}_official_marksheet.pdf`)
+                                }
+                                className="px-2.5 py-1 rounded bg-sky-900/50 hover:bg-sky-800 text-sky-300 hover:text-white border border-sky-600/40 text-[11px] font-semibold inline-flex items-center gap-1 mr-2"
+                              >
+                                <Download className="w-3 h-3" />
+                                <span>PDF</span>
+                              </button>
+                            )}
+                            <a
+                              href={`/verify?usn=${encodeURIComponent(res.usn)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-[11px] inline-flex items-center gap-1"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              <span>Verify</span>
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
 
             {/* Parsed Rows Preview Table */}
             {csvParsedRows.length > 0 && (
@@ -852,7 +1605,7 @@ Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
                     Parsed Records Ready for On-Chain Batch Processing ({csvParsedRows.length} Students)
                   </span>
                   <span className="text-[11px] font-mono text-cyan-400">
-                    Each record will be saved & pinned separately
+                    Each record will generate an authentic PDF with verification QR code & IPFS anchor
                   </span>
                 </div>
 
@@ -894,7 +1647,7 @@ Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
                   <ShieldCheck className="w-4 h-4" />
                   <span>
                     {isProcessingBulk
-                      ? `Anchoring ${bulkProgress?.current} of ${bulkProgress?.total} Students to Ethereum & IPFS...`
+                      ? `Compiling Marksheets & Anchoring ${bulkProgress?.current} of ${bulkProgress?.total} Students to Ethereum & IPFS...`
                       : `Execute Decentralized Bulk Anchoring (${csvParsedRows.length} Students)`}
                   </span>
                 </button>
@@ -1056,14 +1809,25 @@ Decentralized Proof:  Anchored to Ethereum Smart Contract & Pinata IPFS
                           {c.documentHash.slice(0, 10)}...{c.documentHash.slice(-8)}
                         </td>
                         <td className="px-3 py-3">
-                          <a
-                            href={getIPFSUrl(c.ipfsCID)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 font-sans"
-                          >
-                            View IPFS <ExternalLink className="w-3 h-3" />
-                          </a>
+                          <div className="flex items-center gap-2.5">
+                            <a
+                              href={getIPFSUrl(c.ipfsCID)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 font-sans"
+                            >
+                              IPFS <ExternalLink className="w-3 h-3" />
+                            </a>
+                            <span className="text-slate-600">|</span>
+                            <a
+                              href={`/verify/${c.credentialId}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-sans"
+                            >
+                              Verify <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </div>
                         </td>
                         <td className="px-3 py-3 font-sans">
                           <StatusBadge status={c.status} size="sm" />

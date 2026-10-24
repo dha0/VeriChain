@@ -8,15 +8,19 @@
     "start": "next start"
   },
   "dependencies": {
+    "@types/qrcode": "^1.5.6",
     "clsx": "^2.1.1",
     "dotenv": "^18.0.4",
     "ethers": "^6.13.2",
     "lucide-react": "^0.439.0",
     "next": "14.2.10",
+    "pdf-lib": "^1.17.1",
+    "qrcode": "^1.5.4",
     "qrcode.react": "^3.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tailwind-merge": "^2.5.2"
+    "tailwind-merge": "^2.5.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
