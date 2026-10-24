@@ -74,20 +74,7 @@ export default function VerifyPage() {
         } catch (e) {}
 
         if (!sData || !sData.exists) {
-          if (clean.toUpperCase() === "1RV21CS001") {
-            sData = {
-              id: 1,
-              usn: "1RV21CS001",
-              name: "Rahul Sharma",
-              course: "B.E. Computer Science & Engineering",
-              graduationYear: 2025,
-              percentage: 88,
-              universityId: 1,
-              exists: true,
-            };
-          } else {
-            throw new Error(`Student USN "${clean}" was not found on the blockchain.`);
-          }
+          throw new Error(`Student USN "${clean}" was not found on the blockchain.`);
         }
 
         const studentId = Number(sData.id);
@@ -95,7 +82,7 @@ export default function VerifyPage() {
         if (credIds.length > 0) {
           credId = Number(credIds[credIds.length - 1]);
         } else {
-          credId = 1;
+          throw new Error(`No credentials have been issued on-chain for USN "${clean}".`);
         }
       } else if (searchType === "name") {
         const counters = await contract.getCounters();
@@ -108,19 +95,6 @@ export default function VerifyPage() {
               break;
             }
           } catch (e) {}
-        }
-
-        if (!sData && clean.toLowerCase().includes("rahul")) {
-          sData = {
-            id: 1,
-            usn: "1RV21CS001",
-            name: "Rahul Sharma",
-            course: "B.E. Computer Science & Engineering",
-            graduationYear: 2025,
-            percentage: 88,
-            universityId: 1,
-            exists: true,
-          };
         }
 
         if (!sData) {

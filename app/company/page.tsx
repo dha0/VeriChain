@@ -159,22 +159,8 @@ export default function CompanyPage() {
         }
       }
 
-      // If still not found and in demo mode with default student
-      if (!foundStudent && (clean.toUpperCase() === "1RV21CS001" || clean.toLowerCase().includes("rahul"))) {
-        foundStudent = {
-          id: 1,
-          usn: "1RV21CS001",
-          name: "Rahul Sharma",
-          course: "B.E. Computer Science & Engineering",
-          graduationYear: 2025,
-          percentage: 88,
-          universityId: 1,
-          exists: true,
-        };
-      }
-
       if (!foundStudent) {
-        throw new Error(`No student found matching "${clean}". Search by USN (e.g. 1RV21CS001) or Candidate Name.`);
+        throw new Error(`No student found matching "${clean}". Search by USN or Candidate Name.`);
       }
 
       const sId = Number(foundStudent.id);

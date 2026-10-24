@@ -150,20 +150,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
 
-      // If contract is fresh/unregistered, provide graceful feedback
+      // If contract is fresh/unregistered, provide accurate feedback
       throw new Error(
-        `University Code "${cleanCode}" is not registered on the smart contract. Please register via Admin console or deploy script.`
+        `University Code "${cleanCode}" is not registered on the smart contract. Please register via Admin console.`
       );
     } catch (err: any) {
-      // If RPC is unreachable in offline dev, allow default VTU if explicitly matched
-      if (cleanCode === "VTU-KA-001") {
-        saveSession("university", "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", null, {
-          id: 1,
-          name: "Visvesvaraya Technological University",
-          code: "VTU-KA-001",
-        });
-        return;
-      }
       throw err;
     } finally {
       setIsLoading(false);
@@ -243,15 +234,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         `Company Code "${cleanCode}" is not registered on the smart contract. Please register via Admin console.`
       );
     } catch (err: any) {
-      // If RPC is unreachable in offline dev, allow default INFY if explicitly matched
-      if (cleanCode === "INFY-BLR-01") {
-        saveSession("company", "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC", null, {
-          id: 1,
-          name: "Infosys Technologies Ltd",
-          code: "INFY-BLR-01",
-        });
-        return;
-      }
       throw err;
     } finally {
       setIsLoading(false);
@@ -285,15 +267,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           throw new Error(`Student with USN "${cleanUSN}" was not found on the blockchain.`);
         }
       } catch (e: any) {
-        if (e.message && e.message.includes("not found")) {
-          throw e;
-        }
-        // Fallback for default demo USN if node offline
-        if (cleanUSN === "1RV21CS001") {
-          studentName = "Rahul Sharma";
-        } else {
-          throw new Error(`Student USN "${cleanUSN}" not registered on-chain. Register via University Portal.`);
-        }
+        throw new Error(
+          e.reason || e.message || `Student USN "${cleanUSN}" not registered on-chain. Register via University Portal.`
+        );
       }
 
       saveSession("student", null, cleanUSN, {

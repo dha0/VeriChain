@@ -200,18 +200,12 @@ export default function AdminPage() {
         await tx.wait();
       }
 
-      // Mark approved in local state & localStorage immediately
+      // Mark approved in local state & database immediately
       setAccessRequests((prev) =>
         prev.map((r) => (r.requestId === req.requestId ? { ...r, approved: true } : r))
       );
-      try {
-        const approved = JSON.parse(localStorage.getItem("admin_approved_requests") || "[]");
-        if (!approved.includes(req.requestId)) {
-          localStorage.setItem("admin_approved_requests", JSON.stringify([...approved, req.requestId]));
-        }
-      } catch (e) {}
 
-      // Mark approved in API
+      // Mark approved in API and on-chain
       try {
         await fetch("/api/requests", {
           method: "POST",
@@ -240,13 +234,6 @@ export default function AdminPage() {
     if (!confirm("Are you sure you want to dismiss this access request?")) return;
     try {
       setAccessRequests((prev) => prev.filter((r) => r.requestId !== requestId));
-      try {
-        const dismissed = JSON.parse(localStorage.getItem("admin_dismissed_requests") || "[]");
-        if (!dismissed.includes(requestId)) {
-          localStorage.setItem("admin_dismissed_requests", JSON.stringify([...dismissed, requestId]));
-        }
-      } catch (e) {}
-
       await fetch("/api/requests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -261,14 +248,7 @@ export default function AdminPage() {
   const handleClearAllRequests = async () => {
     if (!confirm("Are you sure you want to dismiss all pending access requests?")) return;
     try {
-      const allPendingIds = pendingRequests.map((r) => r.requestId);
       setAccessRequests([]);
-      try {
-        const dismissed = JSON.parse(localStorage.getItem("admin_dismissed_requests") || "[]");
-        const updated = Array.from(new Set([...dismissed, ...allPendingIds]));
-        localStorage.setItem("admin_dismissed_requests", JSON.stringify(updated));
-      } catch (e) {}
-
       await fetch("/api/requests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -366,20 +346,9 @@ export default function AdminPage() {
   };
 
   const pendingRequests = useMemo(() => {
-    let dismissedIds: number[] = [];
-    let approvedIds: number[] = [];
-    if (typeof window !== "undefined") {
-      try {
-        dismissedIds = JSON.parse(localStorage.getItem("admin_dismissed_requests") || "[]");
-        approvedIds = JSON.parse(localStorage.getItem("admin_approved_requests") || "[]");
-      } catch (e) {}
-    }
-
     return accessRequests.filter((req) => {
-      // 1. Explicitly approved or dismissed
+      // 1. Explicitly approved on-chain
       if (req.approved) return false;
-      if (dismissedIds.includes(req.requestId)) return false;
-      if (approvedIds.includes(req.requestId)) return false;
 
       // 2. Check if already registered on the blockchain ledger
       const targetCode = (req.proposedCode || "").trim().toUpperCase();
