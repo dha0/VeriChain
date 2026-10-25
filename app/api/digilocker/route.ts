@@ -1,9 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DigiLockerDocument } from "@/types";
+import { getServerSession } from "@/lib/serverAuth";
 
 export async function GET(req: NextRequest) {
+  const session = await getServerSession(req);
+  if (!session) {
+    return NextResponse.json(
+      { error: "Unauthorized: Active authenticated session required to access DigiLocker." },
+      { status: 401 }
+    );
+  }
+
   const { searchParams } = new URL(req.url);
-  const usn = searchParams.get("usn") || "1RV21CS001";
+  const usn = searchParams.get("usn") || session.studentUSN || "1RV21CS001";
 
   // Verified National Academic Depository (NAD) / DigiLocker documents for candidate
   const mockDigiLockerDocs: DigiLockerDocument[] = [
@@ -43,13 +52,21 @@ export async function GET(req: NextRequest) {
     success: true,
     connected: true,
     digiLockerId: "DIGI-NAD-IND-882190",
-    candidateName: "Rahul Sharma",
+    candidateName: session.entityInfo?.name || "Rahul Sharma",
     aadhaarLinked: true,
     documents: mockDigiLockerDocs,
   });
 }
 
 export async function POST(req: NextRequest) {
+  const session = await getServerSession(req);
+  if (!session) {
+    return NextResponse.json(
+      { error: "Unauthorized: Active authenticated session required." },
+      { status: 401 }
+    );
+  }
+
   try {
     const body = await req.json();
     const { docId, usn } = body;

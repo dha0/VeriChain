@@ -2,7 +2,8 @@
 
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { connectWallet, isMetaMaskInstalled, getContractReadOnly } from "@/lib/ethereum";
+import { BrowserProvider } from "ethers";
+import { connectWallet, isMetaMaskInstalled } from "@/lib/ethereum";
 import { UserRole } from "@/types";
 
 export interface EntityInfo {
@@ -24,14 +25,31 @@ interface AuthContextType {
   isLoading: boolean;
   loginUniversityWithWallet: () => Promise<void>;
   loginCompanyWithWallet: () => Promise<void>;
-  loginUniversityWithCode: (code: string) => Promise<void>;
-  loginCompanyWithCode: (code: string) => Promise<void>;
+  loginUniversityWithCode: (code: string, accessCode?: string) => Promise<void>;
+  loginCompanyWithCode: (code: string, accessCode?: string) => Promise<void>;
   loginWithUSN: (usn: string) => Promise<void>;
   loginAdminWithWallet: () => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+/**
+ * Requests an ephemeral SIWE cryptographic nonce from the server,
+ * then prompts MetaMask to sign it using personal_sign.
+ */
+async function requestSIWESignature(walletAddress: string): Promise<{ message: string; signature: string }> {
+  const nonceRes = await fetch(`/api/auth/nonce?wallet=${encodeURIComponent(walletAddress)}`);
+  const nonceData = await nonceRes.json();
+  if (!nonceRes.ok || !nonceData.message) {
+    throw new Error(nonceData.error || "Failed to generate authentication challenge from server.");
+  }
+
+  const provider = new BrowserProvider(window.ethereum);
+  const signer = await provider.getSigner();
+  const signature = await signer.signMessage(nonceData.message);
+  return { message: nonceData.message, signature };
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const router = useRouter();
@@ -41,49 +59,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [entityInfo, setEntityInfo] = useState<EntityInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Restore saved session from localStorage on mount
+  // Restore session exclusively from signed server httpOnly JWT cookie on mount
   useEffect(() => {
-    try {
-      const savedAuth = localStorage.getItem("verichain_auth");
-      if (savedAuth) {
-        const parsed = JSON.parse(savedAuth);
-        setRole(parsed.role || "guest");
-        setAccount(parsed.account || null);
-        setStudentUSN(parsed.studentUSN || null);
-        setEntityInfo(parsed.entityInfo || null);
+    async function restoreServerSession() {
+      try {
+        const res = await fetch("/api/auth/session");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.authenticated && data.session) {
+            setRole(data.session.role || "guest");
+            setAccount(data.session.account || null);
+            setStudentUSN(data.session.studentUSN || null);
+            setEntityInfo(data.session.entityInfo || null);
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to restore server session:", e);
+      } finally {
+        setIsLoading(false);
       }
-    } catch (e) {
-      console.error("Failed to restore session:", e);
-    } finally {
-      setIsLoading(false);
     }
+    restoreServerSession();
   }, []);
 
-  const saveSession = (
-    newRole: UserRole,
-    newAccount: string | null,
-    newUSN: string | null,
-    newEntityInfo: EntityInfo | null
-  ) => {
-    setRole(newRole);
-    setAccount(newAccount);
-    setStudentUSN(newUSN);
-    setEntityInfo(newEntityInfo);
-
-    localStorage.setItem(
-      "verichain_auth",
-      JSON.stringify({
-        role: newRole,
-        account: newAccount,
-        studentUSN: newUSN,
-        entityInfo: newEntityInfo,
-      })
-    );
-  };
-
   /**
-   * Decentralized University Authentication via MetaMask
-   * Verifies that the connected wallet address is registered on-chain in `universityAddressToId`
+   * Cryptographic SIWE University Login via MetaMask
+   * Prompts MetaMask signature and verifies against server & smart contract.
    */
   const loginUniversityWithWallet = async () => {
     setIsLoading(true);
@@ -93,77 +94,95 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const connectedAccount = await connectWallet();
-      const contract = getContractReadOnly();
-      const uIdBigInt = await contract.universityAddressToId(connectedAccount);
-      const uId = Number(uIdBigInt);
+      const { message, signature } = await requestSIWESignature(connectedAccount);
 
-      if (uId === 0) {
-        throw new Error(
-          `Access Denied: Connected wallet (${connectedAccount.slice(0, 6)}...${connectedAccount.slice(
-            -4
-          )}) is not registered as an accredited University on the blockchain.`
-        );
-      }
-
-      const uData = await contract.getUniversity(uId);
-      if (!uData.active) {
-        throw new Error(`University authority "${uData.name}" is currently suspended by Administrator.`);
-      }
-
-      saveSession("university", connectedAccount, null, {
-        id: uId,
-        name: uData.name,
-        code: uData.universityCode,
-        wallet: connectedAccount,
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          loginType: "wallet",
+          wallet: connectedAccount,
+          message,
+          signature,
+        }),
       });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "University wallet authentication failed.");
+      }
+
+      setRole(data.session.role);
+      setAccount(data.session.account);
+      setStudentUSN(data.session.studentUSN);
+      setEntityInfo(data.session.entityInfo);
     } finally {
       setIsLoading(false);
     }
   };
 
   /**
-   * On-chain University Login via Registered Institutional Code
+   * Server-Side University Login via Salted Bcrypt Access Code
+   * Verifies against server database and issues httpOnly JWT session cookie.
+   * If MetaMask is connected, also requires SIWE signature.
    */
-  const loginUniversityWithCode = async (code: string) => {
+  const loginUniversityWithCode = async (code: string, accessCode?: string) => {
     const cleanCode = code.trim().toUpperCase();
-    if (!cleanCode) throw new Error("Please enter your University Authority Code.");
+    if (!cleanCode && !accessCode) {
+      throw new Error("Please enter your University Authority Code or Secret Passkey.");
+    }
 
     setIsLoading(true);
     try {
-      const contract = getContractReadOnly();
-      const counters = await contract.getCounters();
-      const totalUniv = Number(counters.totalUniversities);
+      let wallet: string | undefined;
+      let message: string | undefined;
+      let signature: string | undefined;
 
-      for (let i = 1; i <= totalUniv; i++) {
-        const u = await contract.getUniversity(i);
-        if (u.universityCode.toUpperCase() === cleanCode) {
-          if (!u.active) {
-            throw new Error(`University "${u.name}" has been deactivated on-chain.`);
+      // SIWE wallet signature where available
+      if (isMetaMaskInstalled()) {
+        try {
+          const accounts = await window.ethereum.request({ method: "eth_accounts" });
+          if (accounts && accounts.length > 0) {
+            const sig = await requestSIWESignature(accounts[0]);
+            wallet = accounts[0];
+            message = sig.message;
+            signature = sig.signature;
           }
-          saveSession("university", u.wallet, null, {
-            id: Number(u.id),
-            name: u.name,
-            code: u.universityCode,
-            wallet: u.wallet,
-          });
-          return;
+        } catch (sigErr) {
+          console.warn("SIWE signature skipped or cancelled:", sigErr);
         }
       }
 
-      // If contract is fresh/unregistered, provide accurate feedback
-      throw new Error(
-        `University Code "${cleanCode}" is not registered on the smart contract. Please register via Admin console.`
-      );
-    } catch (err: any) {
-      throw err;
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          loginType: "code",
+          entityType: "university",
+          codeIdentifier: cleanCode,
+          accessCode: (accessCode || cleanCode).trim(),
+          wallet,
+          message,
+          signature,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Invalid University credentials.");
+      }
+
+      setRole(data.session.role);
+      setAccount(data.session.account);
+      setStudentUSN(data.session.studentUSN);
+      setEntityInfo(data.session.entityInfo);
     } finally {
       setIsLoading(false);
     }
   };
 
   /**
-   * Decentralized Company Recruiter Authentication via MetaMask
-   * Verifies that the connected wallet address is registered on-chain in `companyAddressToId`
+   * Cryptographic SIWE Recruiter Login via MetaMask
    */
   const loginCompanyWithWallet = async () => {
     setIsLoading(true);
@@ -173,76 +192,92 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const connectedAccount = await connectWallet();
-      const contract = getContractReadOnly();
-      const cIdBigInt = await contract.companyAddressToId(connectedAccount);
-      const cId = Number(cIdBigInt);
+      const { message, signature } = await requestSIWESignature(connectedAccount);
 
-      if (cId === 0) {
-        throw new Error(
-          `Access Denied: Connected wallet (${connectedAccount.slice(0, 6)}...${connectedAccount.slice(
-            -4
-          )}) is not registered as an authorized Hiring Partner on the blockchain.`
-        );
-      }
-
-      const cData = await contract.getCompany(cId);
-      if (!cData.active) {
-        throw new Error(`Corporate partner "${cData.name}" is currently suspended by Administrator.`);
-      }
-
-      saveSession("company", connectedAccount, null, {
-        id: cId,
-        name: cData.name,
-        code: cData.companyCode,
-        wallet: connectedAccount,
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          loginType: "wallet",
+          wallet: connectedAccount,
+          message,
+          signature,
+        }),
       });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Company recruiter authentication failed.");
+      }
+
+      setRole(data.session.role);
+      setAccount(data.session.account);
+      setStudentUSN(data.session.studentUSN);
+      setEntityInfo(data.session.entityInfo);
     } finally {
       setIsLoading(false);
     }
   };
 
   /**
-   * On-chain Company Login via Registered Corporate Code
+   * Server-Side Recruiter Login via Salted Bcrypt Corporate Code
    */
-  const loginCompanyWithCode = async (code: string) => {
+  const loginCompanyWithCode = async (code: string, accessCode?: string) => {
     const cleanCode = code.trim().toUpperCase();
-    if (!cleanCode) throw new Error("Please enter your Corporate Code.");
+    if (!cleanCode && !accessCode) {
+      throw new Error("Please enter your Corporate Hiring Code or Secret Passkey.");
+    }
 
     setIsLoading(true);
     try {
-      const contract = getContractReadOnly();
-      const counters = await contract.getCounters();
-      const totalComp = Number(counters.totalCompanies);
+      let wallet: string | undefined;
+      let message: string | undefined;
+      let signature: string | undefined;
 
-      for (let i = 1; i <= totalComp; i++) {
-        const c = await contract.getCompany(i);
-        if (c.companyCode.toUpperCase() === cleanCode) {
-          if (!c.active) {
-            throw new Error(`Company "${c.name}" has been deactivated on-chain.`);
+      if (isMetaMaskInstalled()) {
+        try {
+          const accounts = await window.ethereum.request({ method: "eth_accounts" });
+          if (accounts && accounts.length > 0) {
+            const sig = await requestSIWESignature(accounts[0]);
+            wallet = accounts[0];
+            message = sig.message;
+            signature = sig.signature;
           }
-          saveSession("company", c.wallet, null, {
-            id: Number(c.id),
-            name: c.name,
-            code: c.companyCode,
-            wallet: c.wallet,
-          });
-          return;
+        } catch (sigErr) {
+          console.warn("SIWE signature skipped or cancelled:", sigErr);
         }
       }
 
-      throw new Error(
-        `Company Code "${cleanCode}" is not registered on the smart contract. Please register via Admin console.`
-      );
-    } catch (err: any) {
-      throw err;
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          loginType: "code",
+          entityType: "company",
+          codeIdentifier: cleanCode,
+          accessCode: (accessCode || cleanCode).trim(),
+          wallet,
+          message,
+          signature,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Invalid Company credentials.");
+      }
+
+      setRole(data.session.role);
+      setAccount(data.session.account);
+      setStudentUSN(data.session.studentUSN);
+      setEntityInfo(data.session.entityInfo);
     } finally {
       setIsLoading(false);
     }
   };
 
   /**
-   * Student Login via On-Chain USN
-   * Looks up candidate profile directly from smart contract registry
+   * Student Login via On-Chain USN (Server-Verified & Session Issued)
    */
   const loginWithUSN = async (usn: string) => {
     const cleanUSN = usn.trim().toUpperCase();
@@ -250,42 +285,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setIsLoading(true);
     try {
-      let studentName = "Registered Student";
-      let course = "B.E. Computer Science & Engineering";
-      let gradYear = 2025;
-      let percentage = 88;
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          loginType: "student",
+          usn: cleanUSN,
+        }),
+      });
 
-      try {
-        const contract = getContractReadOnly();
-        const s = await contract.getStudentByUSN(cleanUSN);
-        if (s.exists) {
-          studentName = s.name;
-          course = s.course;
-          gradYear = Number(s.graduationYear);
-          percentage = Number(s.percentage);
-        } else {
-          throw new Error(`Student with USN "${cleanUSN}" was not found on the blockchain.`);
-        }
-      } catch (e: any) {
-        throw new Error(
-          e.reason || e.message || `Student USN "${cleanUSN}" not registered on-chain. Register via University Portal.`
-        );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Student USN "${cleanUSN}" not found on blockchain registry.`);
       }
 
-      saveSession("student", null, cleanUSN, {
-        name: studentName,
-        code: cleanUSN,
-        course,
-        gradYear,
-        percentage,
-      });
+      setRole(data.session.role);
+      setAccount(data.session.account);
+      setStudentUSN(data.session.studentUSN);
+      setEntityInfo(data.session.entityInfo);
     } finally {
       setIsLoading(false);
     }
   };
 
   /**
-   * Secret Admin Login: Connected ONLY by Admin via MetaMask
+   * Cryptographic Admin Login: SIWE Signature Verification via MetaMask
    */
   const loginAdminWithWallet = async () => {
     setIsLoading(true);
@@ -295,39 +319,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const connectedAccount = await connectWallet();
-      const contract = getContractReadOnly();
-      const onChainAdmin = await contract.admin();
+      const { message, signature } = await requestSIWESignature(connectedAccount);
 
-      if (connectedAccount.toLowerCase() !== onChainAdmin.toLowerCase()) {
-        if (onChainAdmin.toLowerCase() === "0x0000000000000000000000000000000000000000") {
-          saveSession("admin", connectedAccount, null, {
-            name: "System Administrator",
-            code: "PLATFORM-ADMIN",
-          });
-          return;
-        }
-        throw new Error(
-          `Access Denied: Connected wallet (${connectedAccount.slice(0, 6)}...${connectedAccount.slice(
-            -4
-          )}) does not match the Contract Admin address (${onChainAdmin.slice(0, 6)}...${onChainAdmin.slice(-4)}).`
-        );
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          loginType: "wallet",
+          wallet: connectedAccount,
+          message,
+          signature,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Platform Admin authentication failed.");
       }
 
-      saveSession("admin", connectedAccount, null, {
-        name: "System Administrator",
-        code: "PLATFORM-ADMIN",
-      });
+      setRole(data.session.role);
+      setAccount(data.session.account);
+      setStudentUSN(data.session.studentUSN);
+      setEntityInfo(data.session.entityInfo);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const logout = () => {
+  /**
+   * Signs out user and clears the httpOnly session cookie on the server.
+   */
+  const logout = async () => {
+    try {
+      await fetch("/api/auth/session", { method: "POST" });
+    } catch (e) {
+      console.warn("Failed to clear server session:", e);
+    }
     setRole("guest");
     setAccount(null);
     setStudentUSN(null);
     setEntityInfo(null);
-    localStorage.removeItem("verichain_auth");
+    try {
+      localStorage.removeItem("verichain_auth");
+    } catch {}
     router.push("/login");
   };
 

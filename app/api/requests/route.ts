@@ -4,11 +4,12 @@ import path from "path";
 import os from "os";
 import { AccessRequest } from "@/types";
 import { getReadOnlyServerContract, getServerContract } from "@/lib/serverContract";
+import { getServerSession } from "@/lib/serverAuth";
+import { generateAndStoreAccessCode } from "@/lib/accessCodeStore";
 
 const CWD_FILE = path.join(process.cwd(), ".access_requests.json");
 const TMP_FILE = path.join(os.tmpdir(), "access_requests.json");
 
-// In-memory cache across serverless warm invocations
 declare global {
   var __accessRequestsCache: AccessRequest[] | undefined;
 }
@@ -18,7 +19,6 @@ function readLocalRequests(): AccessRequest[] {
     return global.__accessRequestsCache;
   }
 
-  // 1. Check /tmp first (writable in Vercel serverless functions)
   try {
     if (fs.existsSync(TMP_FILE)) {
       const content = fs.readFileSync(TMP_FILE, "utf-8");
@@ -30,7 +30,6 @@ function readLocalRequests(): AccessRequest[] {
     }
   } catch {}
 
-  // 2. Check project root file (persisted in git or local dev)
   try {
     if (fs.existsSync(CWD_FILE)) {
       const content = fs.readFileSync(CWD_FILE, "utf-8");
@@ -48,21 +47,26 @@ function readLocalRequests(): AccessRequest[] {
 
 function writeLocalRequests(data: AccessRequest[]) {
   global.__accessRequestsCache = data;
-
   try {
     fs.writeFileSync(TMP_FILE, JSON.stringify(data, null, 2));
   } catch {}
-
   try {
     fs.writeFileSync(CWD_FILE, JSON.stringify(data, null, 2));
   } catch {}
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const session = await getServerSession(req);
+  if (!session || session.role !== "admin") {
+    return NextResponse.json(
+      { error: "Forbidden: Platform Administrator privileges required to inspect institutional access requests." },
+      { status: 403 }
+    );
+  }
+
   const localList = readLocalRequests();
   const onChainList: AccessRequest[] = [];
 
-  // 1. Fetch on-chain access requests directly from the smart contract
   try {
     const contract = getReadOnlyServerContract();
     const countBig = await contract.getAccessRequestCount();
@@ -87,7 +91,6 @@ export async function GET() {
     console.warn("Unable to fetch on-chain access requests directly:", err);
   }
 
-  // 2. Merge on-chain requests with any local pending requests
   const map = new Map<string, AccessRequest>();
   for (const r of onChainList) {
     map.set(`code_${r.proposedCode.toUpperCase()}`, r);
@@ -108,9 +111,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { action, requestData, requestId } = body;
+    const { action, requestData, requestId, entityData } = body;
     const localRequests = readLocalRequests();
 
+    // ----------------------------------------------------
+    // Public Submission of Institutional Access Request
+    // ----------------------------------------------------
     if (action === "submit") {
       const { entityType, name, proposedCode, contactEmail, wallet } = requestData || {};
       if (!name || !proposedCode || !contactEmail) {
@@ -121,7 +127,6 @@ export async function POST(req: NextRequest) {
       let onChainReqId: number | null = null;
       let onChainTxHash: string | null = null;
 
-      // Anchor access request on-chain to Ethereum smart contract
       try {
         const { contract } = getServerContract("admin");
         const tx = await contract.requestAccess(
@@ -168,8 +173,23 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // ----------------------------------------------------
+    // SECURITY CHECK: All Actions Below Require Admin Session
+    // ----------------------------------------------------
+    const session = await getServerSession(req);
+    if (!session || session.role !== "admin") {
+      return NextResponse.json(
+        { error: "Forbidden: Platform Administrator privileges required." },
+        { status: 403 }
+      );
+    }
+
+    // ----------------------------------------------------
+    // Admin Action: Approve Institutional Access Request
+    // ----------------------------------------------------
     if (action === "approve") {
       const targetId = Number(requestId);
+      const reqRecord = localRequests.find((r) => r.requestId === targetId);
 
       // Attempt on-chain approval if applicable
       try {
@@ -186,15 +206,60 @@ export async function POST(req: NextRequest) {
         writeLocalRequests(localRequests);
       }
 
-      return NextResponse.json({ success: true, requestId: targetId });
+      // Generate random high-entropy secret access code, store bcrypt hash
+      let secretAccessCode = "";
+      if (reqRecord) {
+        secretAccessCode = generateAndStoreAccessCode(
+          reqRecord.entityType,
+          targetId,
+          reqRecord.proposedCode,
+          reqRecord.name,
+          reqRecord.wallet
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        requestId: targetId,
+        secretAccessCode, // Returned ONCE to the admin to share with the institution
+      });
     }
 
+    // ----------------------------------------------------
+    // Admin Action: Generate Secret Access Code for Manual Registration
+    // ----------------------------------------------------
+    if (action === "generate_code") {
+      const { entityType, entityId, codeIdentifier, name, wallet } = entityData || {};
+      if (!codeIdentifier || !name) {
+        return NextResponse.json({ error: "Missing entity details for code generation" }, { status: 400 });
+      }
+
+      const secretAccessCode = generateAndStoreAccessCode(
+        entityType || "university",
+        Number(entityId) || 1,
+        codeIdentifier,
+        name,
+        wallet || "0x0000000000000000000000000000000000000000"
+      );
+
+      return NextResponse.json({
+        success: true,
+        secretAccessCode,
+      });
+    }
+
+    // ----------------------------------------------------
+    // Admin Action: Reject / Dismiss Request
+    // ----------------------------------------------------
     if (action === "reject" || action === "delete") {
       const filtered = localRequests.filter((r) => r.requestId !== Number(requestId));
       writeLocalRequests(filtered);
       return NextResponse.json({ success: true, requests: filtered });
     }
 
+    // ----------------------------------------------------
+    // Admin Action: Clear All Requests
+    // ----------------------------------------------------
     if (action === "clear_all") {
       writeLocalRequests([]);
       return NextResponse.json({ success: true, requests: [] });

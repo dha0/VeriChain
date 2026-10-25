@@ -1,36 +1,75 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerContract } from "@/lib/serverContract";
+import { getServerSession } from "@/lib/serverAuth";
 
 /**
  * Validates request authentication.
- * If RELAY_SECRET_KEY is configured in the environment, calls must present the matching secret.
+ * Allows either configured RELAY_SECRET_KEY header OR a valid server-side JWT session cookie.
  */
-function isAuthorized(req: NextRequest): boolean {
+async function authorizeRelayCall(req: NextRequest, action: string) {
   const relaySecret = process.env.RELAY_SECRET_KEY?.trim();
-  if (!relaySecret) {
-    // If no secret is configured in env, allow institutional relay operations
-    return true;
-  }
   const headerSecret =
     req.headers.get("x-relay-secret") ||
     req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  return headerSecret === relaySecret;
+
+  if (relaySecret && headerSecret === relaySecret) {
+    return { authorized: true, role: "admin" as const };
+  }
+
+  // Public actions (can be called by unregistered visitors)
+  if (action === "requestAccess") {
+    return { authorized: true, role: "guest" as const };
+  }
+
+  // Verify server session
+  const session = await getServerSession(req);
+  if (!session) {
+    return { authorized: false, error: "Authentication required. Please sign in to execute on-chain relay actions." };
+  }
+
+  // Role permissions matrix
+  if (action === "registerStudent" || action === "issueCredential" || action === "reviewAchievement") {
+    if (session.role !== "university" && session.role !== "admin") {
+      return { authorized: false, error: "Forbidden: University institutional privileges required." };
+    }
+  }
+
+  if (action === "recordVerification") {
+    if (session.role !== "company" && session.role !== "admin") {
+      return { authorized: false, error: "Forbidden: Corporate recruiter privileges required." };
+    }
+  }
+
+  if (action === "approveAccessRequest") {
+    if (session.role !== "admin") {
+      return { authorized: false, error: "Forbidden: Root Platform Administrator privileges required." };
+    }
+  }
+
+  if (action === "submitAchievement") {
+    if (session.role !== "student" && session.role !== "admin") {
+      return { authorized: false, error: "Forbidden: Candidate student credentials required." };
+    }
+  }
+
+  return { authorized: true, role: session.role, session };
 }
 
 export async function POST(req: NextRequest) {
   try {
-    if (!isAuthorized(req)) {
-      return NextResponse.json(
-        { error: "Unauthorized: Invalid or missing relay authentication credentials" },
-        { status: 401 }
-      );
-    }
-
     const body = await req.json();
     const { action, universityCode, companyCode, data } = body;
 
     if (!action) {
       return NextResponse.json({ error: "Missing action parameter" }, { status: 400 });
+    }
+
+    const authCheck = await authorizeRelayCall(req, action);
+    if (!authCheck.authorized) {
+      return NextResponse.json(
+        { error: authCheck.error || "Unauthorized relay execution" },
+        { status: 403 }
+      );
     }
 
     // 1. REGISTER STUDENT
@@ -41,9 +80,10 @@ export async function POST(req: NextRequest) {
       }
 
       const { contract } = getServerContract("university");
-      const cleanCode = (universityCode || "VTU-KA-001").trim().toUpperCase();
+      const cleanCode = (universityCode || authCheck.session?.entityInfo?.code || "VTU-KA-001")
+        .trim()
+        .toUpperCase();
 
-      // Find university ID by code & verify active institutional accreditation
       const uIdBig = await contract.universityCodeToId(cleanCode);
       const uId = Number(uIdBig);
       if (uId === 0) {
@@ -61,7 +101,6 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Check if student already exists
       const cleanUsn = usn.trim().toUpperCase();
       const existingId = Number(await contract.usnToStudentId(cleanUsn));
       if (existingId > 0) {
@@ -100,7 +139,9 @@ export async function POST(req: NextRequest) {
       }
 
       const { contract } = getServerContract("university");
-      const cleanCode = (universityCode || "VTU-KA-001").trim().toUpperCase();
+      const cleanCode = (universityCode || authCheck.session?.entityInfo?.code || "VTU-KA-001")
+        .trim()
+        .toUpperCase();
 
       const uIdBig = await contract.universityCodeToId(cleanCode);
       const uId = Number(uIdBig);
@@ -154,7 +195,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 3. SUBMIT ON-CHAIN ACCESS REQUEST
+    // 3. SUBMIT ON-CHAIN ACCESS REQUEST (PUBLIC)
     if (action === "requestAccess") {
       const { entityType, name, proposedCode, contactEmail, wallet } = data || {};
       if (!name || !proposedCode || !contactEmail) {
@@ -179,7 +220,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 4. APPROVE ON-CHAIN ACCESS REQUEST (ADMIN)
+    // 4. APPROVE ON-CHAIN ACCESS REQUEST (ADMIN ONLY)
     if (action === "approveAccessRequest") {
       const { requestId } = data || {};
       if (!requestId) {
@@ -196,12 +237,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 5. REVIEW STUDENT ACHIEVEMENT
+    // 5. REVIEW STUDENT ACHIEVEMENT (UNIVERSITY ONLY)
     if (action === "reviewAchievement") {
       const { achievementId, status, remarks } = data || {};
       const { contract } = getServerContract("university");
 
-      const cleanCode = (universityCode || "VTU-KA-001").trim().toUpperCase();
+      const cleanCode = (universityCode || authCheck.session?.entityInfo?.code || "VTU-KA-001")
+        .trim()
+        .toUpperCase();
       const uIdBig = await contract.universityCodeToId(cleanCode);
       const uId = Number(uIdBig);
 
@@ -214,13 +257,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 6. SUBMIT STUDENT ACHIEVEMENT
+    // 6. SUBMIT STUDENT ACHIEVEMENT (STUDENT ONLY)
     if (action === "submitAchievement") {
       const { usn, title, issuerOrg, category, documentHash, ipfsCID } = data || {};
       const { contract } = getServerContract("admin");
 
+      const targetUsn = (usn || authCheck.session?.studentUSN || "").trim().toUpperCase();
       const tx = await contract.submitAchievement(
-        (usn || "").trim().toUpperCase(),
+        targetUsn,
         title || "",
         issuerOrg || "External Certification Body",
         category || "Certification",
@@ -235,14 +279,15 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 7. RECORD RECRUITER VERIFICATION
+    // 7. RECORD RECRUITER VERIFICATION (COMPANY ONLY)
     if (action === "recordVerification") {
       const { credentialId, hashMatched, isAuthentic, documentType } = data || {};
       const { contract } = getServerContract("company");
 
       let cId = 1;
-      if (companyCode) {
-        const cIdBig = await contract.companyCodeToId(companyCode.trim().toUpperCase());
+      const cleanComp = (companyCode || authCheck.session?.entityInfo?.code || "").trim().toUpperCase();
+      if (cleanComp) {
+        const cIdBig = await contract.companyCodeToId(cleanComp);
         cId = Number(cIdBig) || 1;
       }
 

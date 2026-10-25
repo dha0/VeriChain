@@ -70,6 +70,14 @@ export default function AdminPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [processingRequestId, setProcessingRequestId] = useState<number | null>(null);
 
+  // One-time secret passkey modal for approved/registered institutions
+  const [newSecretModal, setNewSecretModal] = useState<{
+    name: string;
+    code: string;
+    secret: string;
+  } | null>(null);
+  const [copiedSecret, setCopiedSecret] = useState(false);
+
   useEffect(() => {
     fetchData();
   }, []);
@@ -210,13 +218,21 @@ export default function AdminPage() {
         prev.map((r) => (r.requestId === req.requestId ? { ...r, approved: true } : r))
       );
 
-      // Mark approved in API and on-chain
+      // Mark approved in API and on-chain, retrieve one-time secret passkey
       try {
-        await fetch("/api/requests", {
+        const approveRes = await fetch("/api/requests", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "approve", requestId: req.requestId }),
         });
+        const approveData = await approveRes.json();
+        if (approveData.secretAccessCode) {
+          setNewSecretModal({
+            name: req.name,
+            code: req.proposedCode,
+            secret: approveData.secretAccessCode,
+          });
+        }
       } catch (e) {}
 
       setStatusMessage({
@@ -295,6 +311,30 @@ export default function AdminPage() {
       const tx = await contract.registerUniversity(uName.trim(), cleanCode, resolvedWallet);
       setStatusMessage({ text: "Submitting to Ethereum network...", type: "info" });
       await tx.wait();
+
+      // Generate secret access passkey and store salted bcrypt hash
+      try {
+        const genRes = await fetch("/api/requests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "generate_code",
+            entityType: "university",
+            name: uName.trim(),
+            codeIdentifier: cleanCode,
+            wallet: resolvedWallet,
+          }),
+        });
+        const genData = await genRes.json();
+        if (genData.secretAccessCode) {
+          setNewSecretModal({
+            name: uName.trim(),
+            code: cleanCode,
+            secret: genData.secretAccessCode,
+          });
+        }
+      } catch (e) {}
+
       setStatusMessage({
         text: `University "${uName.trim()}" accredited on blockchain! Code: ${cleanCode}`,
         type: "success"
@@ -338,6 +378,30 @@ export default function AdminPage() {
       const tx = await contract.registerCompany(cName.trim(), cleanCode, resolvedWallet);
       setStatusMessage({ text: "Submitting to Ethereum network...", type: "info" });
       await tx.wait();
+
+      // Generate secret access passkey and store salted bcrypt hash
+      try {
+        const genRes = await fetch("/api/requests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "generate_code",
+            entityType: "company",
+            name: cName.trim(),
+            codeIdentifier: cleanCode,
+            wallet: resolvedWallet,
+          }),
+        });
+        const genData = await genRes.json();
+        if (genData.secretAccessCode) {
+          setNewSecretModal({
+            name: cName.trim(),
+            code: cleanCode,
+            secret: genData.secretAccessCode,
+          });
+        }
+      } catch (e) {}
+
       setStatusMessage({
         text: `Company "${cName.trim()}" authorized on blockchain! Code: ${cleanCode}`,
         type: "success"
@@ -950,6 +1014,76 @@ export default function AdminPage() {
                   </tbody>
                 </table>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Modal: Display Generated One-Time Secret Passkey */}
+        {newSecretModal && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+            <div className="max-w-md w-full bg-slate-900 border border-emerald-500/40 rounded-3xl p-6 space-y-4 shadow-2xl text-left">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+                  <Shield className="w-4 h-4" />
+                  <span>One-Time Secret Access Passkey Generated</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewSecretModal(null);
+                    setCopiedSecret(false);
+                  }}
+                  className="text-slate-400 hover:text-white p-1 rounded-lg"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs leading-relaxed">
+                ⚠️ <strong>Security Notice:</strong> This random secret passkey is shown <strong>ONCE</strong>.
+                Only its salted bcrypt hash is stored in the database. Copy and securely share it with the institution authority.
+              </div>
+
+              <div className="space-y-1.5 text-xs text-slate-300">
+                <div><strong>Organization:</strong> {newSecretModal.name}</div>
+                <div><strong>Code Identifier:</strong> <span className="font-mono text-white uppercase">{newSecretModal.code}</span></div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-slate-400">
+                  Secret Access Key (Bcrypt Salted & Hashed):
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={newSecretModal.secret}
+                    className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl px-3 py-2 text-xs text-emerald-300 font-mono select-all focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(newSecretModal.secret);
+                      setCopiedSecret(true);
+                      setTimeout(() => setCopiedSecret(false), 3000);
+                    }}
+                    className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shrink-0 transition-colors"
+                  >
+                    {copiedSecret ? "Copied!" : "Copy"}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setNewSecretModal(null);
+                  setCopiedSecret(false);
+                }}
+                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition-colors mt-2"
+              >
+                I have securely saved this key
+              </button>
             </div>
           </div>
         )}

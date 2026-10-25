@@ -109,16 +109,33 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ achievements });
 }
 
+import { getServerSession } from "@/lib/serverAuth";
+
 export async function POST(req: NextRequest) {
   try {
+    const session = await getServerSession(req);
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized: Active authenticated session required." },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const { action, achievementData, achievementId, status, remarks, universityId } = body;
     const achievements = readAchievements();
 
     if (action === "submit") {
+      if (session.role !== "student" && session.role !== "admin") {
+        return NextResponse.json(
+          { error: "Forbidden: Only students or administrators may submit achievements." },
+          { status: 403 }
+        );
+      }
+
       const newAch: Achievement = {
         achievementId: achievements.length + 1,
-        studentId: Number(achievementData.studentId) || 1,
+        studentId: Number(achievementData.studentId) || (session.entityInfo?.id ? Number(session.entityInfo.id) : 1),
         title: achievementData.title,
         issuerOrg: achievementData.issuerOrg || "External Organization",
         category: achievementData.category || "Certification",
@@ -138,6 +155,13 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "review") {
+      if (session.role !== "university" && session.role !== "admin") {
+        return NextResponse.json(
+          { error: "Forbidden: Only accredited university authorities or administrators may review achievements." },
+          { status: 403 }
+        );
+      }
+
       const idx = achievements.findIndex((a) => a.achievementId === Number(achievementId));
       if (idx === -1) {
         return NextResponse.json({ error: "Achievement not found" }, { status: 404 });

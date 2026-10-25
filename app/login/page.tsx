@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   X,
   FileQuestion,
+  Wallet,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -43,6 +44,8 @@ export default function LoginPage() {
     isAuthenticated,
     loginUniversityWithCode,
     loginCompanyWithCode,
+    loginUniversityWithWallet,
+    loginCompanyWithWallet,
     loginWithUSN,
     logout,
   } = useAuth();
@@ -52,9 +55,11 @@ export default function LoginPage() {
 
   // University Form State
   const [univCode, setUnivCode] = useState("");
+  const [univSecret, setUnivSecret] = useState("");
 
   // Company Form State
   const [compCode, setCompCode] = useState("");
+  const [compSecret, setCompSecret] = useState("");
 
   // Student Form State
   const [studentInput, setStudentInput] = useState("");
@@ -73,14 +78,27 @@ export default function LoginPage() {
 
   const handleUnivCodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!univCode.trim()) return;
+    if (!univCode.trim() && !univSecret.trim()) return;
     setIsLoggingIn(true);
     setErrorMessage("");
     try {
-      await loginUniversityWithCode(univCode);
+      await loginUniversityWithCode(univCode, univSecret);
       router.push("/university");
     } catch (err: any) {
-      setErrorMessage(parseBlockchainError(err));
+      setErrorMessage(err.message || parseBlockchainError(err));
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleUnivWalletSubmit = async () => {
+    setIsLoggingIn(true);
+    setErrorMessage("");
+    try {
+      await loginUniversityWithWallet();
+      router.push("/university");
+    } catch (err: any) {
+      setErrorMessage(err.message || parseBlockchainError(err));
     } finally {
       setIsLoggingIn(false);
     }
@@ -88,14 +106,27 @@ export default function LoginPage() {
 
   const handleCompCodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!compCode.trim()) return;
+    if (!compCode.trim() && !compSecret.trim()) return;
     setIsLoggingIn(true);
     setErrorMessage("");
     try {
-      await loginCompanyWithCode(compCode);
+      await loginCompanyWithCode(compCode, compSecret);
       router.push("/company");
     } catch (err: any) {
-      setErrorMessage(parseBlockchainError(err));
+      setErrorMessage(err.message || parseBlockchainError(err));
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleCompWalletSubmit = async () => {
+    setIsLoggingIn(true);
+    setErrorMessage("");
+    try {
+      await loginCompanyWithWallet();
+      router.push("/company");
+    } catch (err: any) {
+      setErrorMessage(err.message || parseBlockchainError(err));
     } finally {
       setIsLoggingIn(false);
     }
@@ -359,27 +390,58 @@ export default function LoginPage() {
               </div>
 
               <div className="space-y-3 pt-2">
-                <form onSubmit={handleUnivCodeSubmit} className="space-y-2">
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300">
-                    Registered University Code
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={univCode}
-                    onChange={(e) => setUnivCode(e.target.value)}
-                    placeholder="Enter Registered University Code"
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
-                  />
+                <form onSubmit={handleUnivCodeSubmit} className="space-y-2.5">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      University Identifier
+                    </label>
+                    <input
+                      type="text"
+                      value={univCode}
+                      onChange={(e) => setUnivCode(e.target.value)}
+                      placeholder="e.g. VTU-KA-001"
+                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Secret Access Passkey
+                    </label>
+                    <input
+                      type="password"
+                      value={univSecret}
+                      onChange={(e) => setUnivSecret(e.target.value)}
+                      placeholder="e.g. VTU-PASS-2026 or secret passkey"
+                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+                    />
+                  </div>
+
                   <button
                     type="submit"
                     disabled={isLoggingIn}
-                    className="w-full bg-sky-600 hover:bg-sky-500 text-white py-2.5 px-4 rounded-xl text-xs font-semibold transition-all shadow-md shadow-sky-600/25 flex items-center justify-center gap-1.5"
+                    className="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white py-2.5 px-4 rounded-xl text-xs font-semibold transition-all shadow-md shadow-sky-600/25 flex items-center justify-center gap-1.5"
                   >
                     <ShieldCheck className="w-4 h-4" />
-                    <span>Sign In with University Code</span>
+                    <span>Sign In with Authority Code</span>
                   </button>
                 </form>
+
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
+                  <span className="flex-shrink mx-2 text-[10px] text-slate-400 uppercase font-mono">or Web3 SIWE</span>
+                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleUnivWalletSubmit}
+                  disabled={isLoggingIn}
+                  className="w-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all border border-slate-300 dark:border-slate-700 flex items-center justify-center gap-2"
+                >
+                  <Wallet className="w-4 h-4 text-sky-500" />
+                  <span>Sign In with MetaMask (SIWE)</span>
+                </button>
 
                 <div className="pt-2 text-center">
                   <button
@@ -399,7 +461,7 @@ export default function LoginPage() {
             </div>
           </div>
 
-          {/* Card 2: Company Recruiter Portal (Code Only) */}
+          {/* Card 2: Company Recruiter Portal */}
           <div
             onMouseEnter={() => setActivePortal("company")}
             className={`group rounded-3xl p-5 sm:p-6 transition-all duration-500 flex flex-col justify-between backdrop-blur-xl relative overflow-hidden ${
@@ -433,27 +495,58 @@ export default function LoginPage() {
               </div>
 
               <div className="space-y-3 pt-2">
-                <form onSubmit={handleCompCodeSubmit} className="space-y-2">
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300">
-                    Registered Corporate Code
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={compCode}
-                    onChange={(e) => setCompCode(e.target.value)}
-                    placeholder="Enter Registered Corporate Code"
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                  />
+                <form onSubmit={handleCompCodeSubmit} className="space-y-2.5">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Corporate Identifier
+                    </label>
+                    <input
+                      type="text"
+                      value={compCode}
+                      onChange={(e) => setCompCode(e.target.value)}
+                      placeholder="e.g. INFY-BLR-01"
+                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Secret Access Passkey
+                    </label>
+                    <input
+                      type="password"
+                      value={compSecret}
+                      onChange={(e) => setCompSecret(e.target.value)}
+                      placeholder="e.g. INFY-PASS-2026 or secret passkey"
+                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+
                   <button
                     type="submit"
                     disabled={isLoggingIn}
-                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 px-4 rounded-xl text-xs font-semibold transition-all shadow-md shadow-emerald-600/25 flex items-center justify-center gap-1.5"
+                    className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white py-2.5 px-4 rounded-xl text-xs font-semibold transition-all shadow-md shadow-emerald-600/25 flex items-center justify-center gap-1.5"
                   >
                     <ShieldCheck className="w-4 h-4" />
                     <span>Sign In with Corporate Code</span>
                   </button>
                 </form>
+
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
+                  <span className="flex-shrink mx-2 text-[10px] text-slate-400 uppercase font-mono">or Web3 SIWE</span>
+                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleCompWalletSubmit}
+                  disabled={isLoggingIn}
+                  className="w-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all border border-slate-300 dark:border-slate-700 flex items-center justify-center gap-2"
+                >
+                  <Wallet className="w-4 h-4 text-emerald-500" />
+                  <span>Sign In with MetaMask (SIWE)</span>
+                </button>
 
                 <div className="pt-2 text-center">
                   <button
