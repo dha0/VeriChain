@@ -3,12 +3,19 @@ import * as jose from "jose";
 import { ethers } from "ethers";
 import { UserRole } from "@/types";
 
-// JWT Secret Key (derived from environment or secure deterministic fallback)
-const JWT_SECRET_STRING =
-  process.env.SESSION_SECRET ||
-  process.env.PRIVATE_KEY ||
-  "verichain-protocol-secure-jwt-secret-key-32-chars-min!";
-const JWT_SECRET = new TextEncoder().encode(JWT_SECRET_STRING);
+/**
+ * Returns the JWT secret from environment variables.
+ * Enforces NO DEFAULT fallback strings.
+ */
+export function getJwtSecret(): Uint8Array {
+  const secret = process.env.JWT_SECRET?.trim() || process.env.SESSION_SECRET?.trim();
+  if (!secret) {
+    throw new Error(
+      "Server Configuration Error: Mandatory environment variable JWT_SECRET is missing. No default secret permitted."
+    );
+  }
+  return new TextEncoder().encode(secret);
+}
 
 export const SESSION_COOKIE_NAME = "verichain_session";
 
@@ -36,10 +43,17 @@ interface AttemptRecord {
   lockedUntil: number | null;
 }
 
-// In-memory rate limiting map across warm serverless requests
+interface OTPRecord {
+  code: string;
+  usn: string;
+  expiresAt: number;
+}
+
+// In-memory state across warm serverless requests
 declare global {
   var __authRateLimitMap: Map<string, AttemptRecord> | undefined;
   var __authNonceMap: Map<string, { nonce: string; expiresAt: number }> | undefined;
+  var __studentOTPStore: Map<string, OTPRecord> | undefined;
 }
 
 const rateLimitMap: Map<string, AttemptRecord> =
@@ -48,9 +62,12 @@ const rateLimitMap: Map<string, AttemptRecord> =
 const nonceMap: Map<string, { nonce: string; expiresAt: number }> =
   global.__authNonceMap || (global.__authNonceMap = new Map());
 
-const MAX_FAILED_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
-const WINDOW_DURATION_MS = 15 * 60 * 1000;
+const otpStore: Map<string, OTPRecord> =
+  global.__studentOTPStore || (global.__studentOTPStore = new Map());
+
+export const MAX_FAILED_ATTEMPTS = 5;
+export const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+export const WINDOW_DURATION_MS = 15 * 60 * 1000;
 
 export function checkRateLimit(key: string): {
   allowed: boolean;
@@ -64,7 +81,7 @@ export function checkRateLimit(key: string): {
     return { allowed: true, remainingAttempts: MAX_FAILED_ATTEMPTS };
   }
 
-  // Check if actively locked out
+  // Active lockout check
   if (record.lockedUntil && record.lockedUntil > now) {
     const remainingSeconds = Math.ceil((record.lockedUntil - now) / 1000);
     return {
@@ -74,14 +91,16 @@ export function checkRateLimit(key: string): {
     };
   }
 
-  // Reset if window expired
+  // Window expired -> reset
   if (now - record.firstAttemptAt > WINDOW_DURATION_MS) {
     rateLimitMap.delete(key);
     return { allowed: true, remainingAttempts: MAX_FAILED_ATTEMPTS };
   }
 
-  const remaining = Math.max(0, MAX_FAILED_ATTEMPTS - record.count);
-  return { allowed: remaining > 0, remainingAttempts: remaining };
+  return {
+    allowed: record.count < MAX_FAILED_ATTEMPTS,
+    remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - record.count),
+  };
 }
 
 export function recordFailedAttempt(key: string): {
@@ -141,11 +160,12 @@ export function verifyWalletSignature(
     const cleanWallet = wallet.trim().toLowerCase();
     const nonceRecord = nonceMap.get(cleanWallet);
 
-    // Nonce must be included in the signed message
+    // Nonce must exist and not be expired
     if (!nonceRecord || nonceRecord.expiresAt < Date.now()) {
       return false;
     }
 
+    // Challenge message must include the exact issued nonce
     if (!message.includes(nonceRecord.nonce)) {
       return false;
     }
@@ -154,7 +174,7 @@ export function verifyWalletSignature(
     const isValid = recoveredAddress.trim().toLowerCase() === cleanWallet;
 
     if (isValid) {
-      // Consume nonce so it cannot be replayed
+      // Consume nonce immediately so it cannot be replayed
       nonceMap.delete(cleanWallet);
     }
     return isValid;
@@ -164,20 +184,46 @@ export function verifyWalletSignature(
 }
 
 // ----------------------------------------------------
-// 3. Signed httpOnly JWT Session Token Management
+// 3. Student Email OTP Engine
+// ----------------------------------------------------
+export function generateStudentOTP(usn: string): { otp: string; expiresAt: number } {
+  const cleanUsn = usn.trim().toUpperCase();
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 min TTL
+  otpStore.set(cleanUsn, { code: otp, usn: cleanUsn, expiresAt });
+  return { otp, expiresAt };
+}
+
+export function verifyStudentOTP(usn: string, providedOtp: string): boolean {
+  const cleanUsn = usn.trim().toUpperCase();
+  const record = otpStore.get(cleanUsn);
+  if (!record || record.expiresAt < Date.now()) {
+    return false;
+  }
+  const isMatch = record.code === providedOtp.trim();
+  if (isMatch) {
+    otpStore.delete(cleanUsn); // consume OTP single-use
+  }
+  return isMatch;
+}
+
+// ----------------------------------------------------
+// 4. Signed httpOnly JWT Session Token Management
 // ----------------------------------------------------
 export async function createSessionJWT(payload: SessionPayload): Promise<string> {
+  const secretKey = getJwtSecret();
   return await new jose.SignJWT({ ...payload })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("24h")
     .setIssuer("verichain-protocol")
-    .sign(JWT_SECRET);
+    .sign(secretKey);
 }
 
 export async function verifySessionJWT(token: string): Promise<SessionPayload | null> {
   try {
-    const { payload } = await jose.jwtVerify(token, JWT_SECRET, {
+    const secretKey = getJwtSecret();
+    const { payload } = await jose.jwtVerify(token, secretKey, {
       issuer: "verichain-protocol",
     });
     return payload as unknown as SessionPayload;
@@ -206,11 +252,12 @@ export async function getServerSession(req: NextRequest): Promise<SessionPayload
 }
 
 export function setSessionCookie(res: NextResponse, token: string) {
+  const isProduction = process.env.NODE_ENV === "production";
   res.cookies.set({
     name: SESSION_COOKIE_NAME,
     value: token,
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: isProduction,
     sameSite: "lax",
     path: "/",
     maxAge: 86400, // 24 hours
@@ -218,11 +265,12 @@ export function setSessionCookie(res: NextResponse, token: string) {
 }
 
 export function clearSessionCookie(res: NextResponse) {
+  const isProduction = process.env.NODE_ENV === "production";
   res.cookies.set({
     name: SESSION_COOKIE_NAME,
     value: "",
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: isProduction,
     sameSite: "lax",
     path: "/",
     maxAge: 0,

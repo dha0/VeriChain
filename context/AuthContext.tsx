@@ -27,7 +27,10 @@ interface AuthContextType {
   loginCompanyWithWallet: () => Promise<void>;
   loginUniversityWithCode: (code: string, accessCode?: string) => Promise<void>;
   loginCompanyWithCode: (code: string, accessCode?: string) => Promise<void>;
-  loginWithUSN: (usn: string) => Promise<void>;
+  loginWithUSN: (usn: string, otp?: string) => Promise<void>;
+  requestStudentOTP: (usn: string) => Promise<{ success: boolean; message: string; devOTP?: string }>;
+  loginStudentWithOTP: (usn: string, otp: string) => Promise<void>;
+  loginStudentWithWallet: (usn: string) => Promise<void>;
   loginAdminWithWallet: () => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -277,11 +280,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /**
-   * Student Login via On-Chain USN (Server-Verified & Session Issued)
+   * Request Email OTP for Student Login
    */
-  const loginWithUSN = async (usn: string) => {
+  const requestStudentOTP = async (usn: string) => {
     const cleanUSN = usn.trim().toUpperCase();
+    if (!cleanUSN) throw new Error("Please enter your University Seat Number (USN).");
+
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        loginType: "student_request_otp",
+        usn: cleanUSN,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to generate security OTP.");
+    }
+    return data;
+  };
+
+  /**
+   * Student Login via USN + Verified Email OTP
+   */
+  const loginStudentWithOTP = async (usn: string, otp: string) => {
+    const cleanUSN = usn.trim().toUpperCase();
+    const cleanOTP = otp.trim();
     if (!cleanUSN) throw new Error("Please enter a valid USN / Roll Number");
+    if (!cleanOTP) throw new Error("Please enter the 6-digit OTP sent to your email.");
 
     setIsLoading(true);
     try {
@@ -291,12 +319,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({
           loginType: "student",
           usn: cleanUSN,
+          otp: cleanOTP,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || `Student USN "${cleanUSN}" not found on blockchain registry.`);
+        throw new Error(data.error || "Student OTP verification failed.");
       }
 
       setRole(data.session.role);
@@ -305,6 +334,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setEntityInfo(data.session.entityInfo);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  /**
+   * Student Login via MetaMask SIWE Cryptographic Signature
+   */
+  const loginStudentWithWallet = async (usn: string) => {
+    const cleanUSN = usn.trim().toUpperCase();
+    if (!cleanUSN) throw new Error("Please enter your USN / Roll Number");
+    if (!isMetaMaskInstalled()) {
+      throw new Error("MetaMask is required for Web3 cryptographic student sign-in.");
+    }
+
+    setIsLoading(true);
+    try {
+      const connectedAccount = await connectWallet();
+      const { message, signature } = await requestSIWESignature(connectedAccount);
+
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          loginType: "student",
+          usn: cleanUSN,
+          wallet: connectedAccount,
+          message,
+          signature,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Student wallet verification failed.");
+      }
+
+      setRole(data.session.role);
+      setAccount(data.session.account);
+      setStudentUSN(data.session.studentUSN);
+      setEntityInfo(data.session.entityInfo);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  /**
+   * Legacy wrapper supporting OTP or direct login
+   */
+  const loginWithUSN = async (usn: string, otp?: string) => {
+    if (otp) {
+      await loginStudentWithOTP(usn, otp);
+    } else {
+      await loginStudentWithWallet(usn);
     }
   };
 
@@ -381,6 +462,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginUniversityWithCode,
         loginCompanyWithCode,
         loginWithUSN,
+        requestStudentOTP,
+        loginStudentWithOTP,
+        loginStudentWithWallet,
         loginAdminWithWallet,
         logout,
       }}

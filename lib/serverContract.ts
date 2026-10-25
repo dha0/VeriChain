@@ -6,14 +6,6 @@ import {
   SUPPORTED_CHAIN_ID,
 } from "@/contracts/contractAddress";
 
-// Default Hardhat fallback private keys for development
-const DEFAULT_HARDHAT_ADMIN_KEY =
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const DEFAULT_HARDHAT_UNI_KEY =
-  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
-const DEFAULT_HARDHAT_COMP_KEY =
-  "0x5de4111afa1a4b94908f83103eb2f95474831082d4ac969f31ee3021aa30c2da";
-
 export function getServerProvider() {
   const isSepolia = SUPPORTED_CHAIN_ID === 11155111;
   const rpcUrl = isSepolia
@@ -29,13 +21,20 @@ export function getReadOnlyServerContract() {
 
 export function getServerContract(entityType: "admin" | "university" | "company" = "admin") {
   const provider = getServerProvider();
-  const isSepolia = SUPPORTED_CHAIN_ID === 11155111;
+  const isLocalDev =
+    process.env.NODE_ENV !== "production" &&
+    ((SUPPORTED_CHAIN_ID as number) === 31337 || process.env.NODE_ENV === "test");
 
   let pKey = process.env.PRIVATE_KEY?.trim() || "";
-  if (!isSepolia || !pKey) {
-    if (entityType === "university") pKey = DEFAULT_HARDHAT_UNI_KEY;
-    else if (entityType === "company") pKey = DEFAULT_HARDHAT_COMP_KEY;
-    else pKey = DEFAULT_HARDHAT_ADMIN_KEY;
+
+  if (!pKey) {
+    if (!isLocalDev) {
+      throw new Error(
+        "Server Configuration Error: PRIVATE_KEY environment variable is required outside local development."
+      );
+    }
+    // Only allowed for local test/hardhat emulation
+    pKey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
   } else if (!pKey.startsWith("0x")) {
     pKey = `0x${pKey}`;
   }

@@ -47,6 +47,9 @@ export default function LoginPage() {
     loginUniversityWithWallet,
     loginCompanyWithWallet,
     loginWithUSN,
+    requestStudentOTP,
+    loginStudentWithOTP,
+    loginStudentWithWallet,
     logout,
   } = useAuth();
 
@@ -63,6 +66,10 @@ export default function LoginPage() {
 
   // Student Form State
   const [studentInput, setStudentInput] = useState("");
+  const [studentOtp, setStudentOtp] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpNotice, setOtpNotice] = useState("");
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -132,16 +139,60 @@ export default function LoginPage() {
     }
   };
 
+  const handleRequestOtp = async () => {
+    if (!studentInput.trim()) {
+      setErrorMessage("Please enter your University Seat Number (USN) first.");
+      return;
+    }
+    setIsSendingOtp(true);
+    setErrorMessage("");
+    setOtpNotice("");
+    try {
+      const res = await requestStudentOTP(studentInput);
+      setOtpSent(true);
+      setOtpNotice(res.message || "Security OTP dispatched to student email.");
+    } catch (err: any) {
+      setErrorMessage(err.message || parseBlockchainError(err));
+    } finally {
+      setIsSendingOtp(false);
+    }
+  };
+
   const handleStudentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!studentInput.trim()) return;
+    if (!otpSent) {
+      await handleRequestOtp();
+      return;
+    }
+    if (!studentOtp.trim()) {
+      setErrorMessage("Please enter the 6-digit OTP code sent to your email.");
+      return;
+    }
     setIsLoggingIn(true);
     setErrorMessage("");
     try {
-      await loginWithUSN(studentInput);
+      await loginStudentWithOTP(studentInput, studentOtp);
       router.push("/student");
     } catch (err: any) {
-      setErrorMessage(parseBlockchainError(err));
+      setErrorMessage(err.message || parseBlockchainError(err));
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleStudentWalletSubmit = async () => {
+    if (!studentInput.trim()) {
+      setErrorMessage("Please enter your University Seat Number (USN) before signing with wallet.");
+      return;
+    }
+    setIsLoggingIn(true);
+    setErrorMessage("");
+    try {
+      await loginStudentWithWallet(studentInput);
+      router.push("/student");
+    } catch (err: any) {
+      setErrorMessage(err.message || parseBlockchainError(err));
     } finally {
       setIsLoggingIn(false);
     }
@@ -412,7 +463,7 @@ export default function LoginPage() {
                       type="password"
                       value={univSecret}
                       onChange={(e) => setUnivSecret(e.target.value)}
-                      placeholder="e.g. VTU-PASS-2026 or secret passkey"
+                      placeholder="Enter secret access passkey"
                       className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                     />
                   </div>
@@ -517,7 +568,7 @@ export default function LoginPage() {
                       type="password"
                       value={compSecret}
                       onChange={(e) => setCompSecret(e.target.value)}
-                      placeholder="e.g. INFY-PASS-2026 or secret passkey"
+                      placeholder="Enter secret access passkey"
                       className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                     />
                   </div>
@@ -609,22 +660,81 @@ export default function LoginPage() {
                       type="text"
                       required
                       value={studentInput}
-                      onChange={(e) => setStudentInput(e.target.value)}
-                      placeholder="Enter University Seat Number (USN)"
+                      onChange={(e) => {
+                        setStudentInput(e.target.value);
+                        if (otpSent) setOtpSent(false);
+                      }}
+                      placeholder="e.g. 1RV21CS001"
                       className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                     />
                   </div>
 
+                  {otpNotice && (
+                    <div className="p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-600 dark:text-purple-300 text-xs">
+                      {otpNotice}
+                    </div>
+                  )}
+
+                  {otpSent ? (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                          6-Digit Email OTP
+                        </label>
+                        <button
+                          type="button"
+                          onClick={handleRequestOtp}
+                          disabled={isSendingOtp}
+                          className="text-[11px] text-purple-600 dark:text-purple-400 hover:underline"
+                        >
+                          Resend Code
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        maxLength={6}
+                        required
+                        value={studentOtp}
+                        onChange={(e) => setStudentOtp(e.target.value)}
+                        placeholder="Enter 6-digit OTP"
+                        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white font-mono tracking-widest text-center focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                      />
+                    </div>
+                  ) : null}
+
                   <button
                     type="submit"
-                    disabled={isLoggingIn}
-                    className="w-full bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2.5 px-4 rounded-xl text-xs transition-all shadow-lg shadow-purple-600/25 flex items-center justify-center gap-2"
+                    disabled={isLoggingIn || isSendingOtp}
+                    className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold py-2.5 px-4 rounded-xl text-xs transition-all shadow-lg shadow-purple-600/25 flex items-center justify-center gap-2"
                   >
-                    <span>View Digital Locker</span>
+                    <span>
+                      {otpSent
+                        ? isLoggingIn
+                          ? "Verifying OTP..."
+                          : "Verify OTP & Enter Locker"
+                        : isSendingOtp
+                        ? "Sending Security OTP..."
+                        : "Send Security OTP to Email"}
+                    </span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
                 </form>
 
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
+                  <span className="flex-shrink mx-2 text-[10px] text-slate-400 uppercase font-mono">or Web3 SIWE</span>
+                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleStudentWalletSubmit}
+                  disabled={isLoggingIn}
+                  className="w-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all border border-slate-300 dark:border-slate-700 flex items-center justify-center gap-2"
+                >
+                  <Wallet className="w-4 h-4 text-purple-500" />
+                  <span>Sign In with MetaMask (SIWE)</span>
+                </button>
               </div>
             </div>
           </div>

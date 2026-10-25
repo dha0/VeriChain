@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerContract } from "@/lib/serverContract";
+import { getServerContract, getReadOnlyServerContract } from "@/lib/serverContract";
 import { getServerSession } from "@/lib/serverAuth";
+import { SUPPORTED_CHAIN_ID } from "@/contracts/contractAddress";
 
 /**
- * Validates request authentication.
+ * Validates request authorization.
  * Allows either configured RELAY_SECRET_KEY header OR a valid server-side JWT session cookie.
+ * RELAY_SECRET_KEY must come exclusively from environment with NO default fallback.
  */
 async function authorizeRelayCall(req: NextRequest, action: string) {
   const relaySecret = process.env.RELAY_SECRET_KEY?.trim();
@@ -13,18 +15,21 @@ async function authorizeRelayCall(req: NextRequest, action: string) {
     req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 
   if (relaySecret && headerSecret === relaySecret) {
-    return { authorized: true, role: "admin" as const };
+    return { authorized: true, role: "admin" as const, session: null };
   }
 
-  // Public actions (can be called by unregistered visitors)
+  // Public actions (can be called by unregistered entities to request institutional access)
   if (action === "requestAccess") {
-    return { authorized: true, role: "guest" as const };
+    return { authorized: true, role: "guest" as const, session: null };
   }
 
   // Verify server session
   const session = await getServerSession(req);
   if (!session) {
-    return { authorized: false, error: "Authentication required. Please sign in to execute on-chain relay actions." };
+    return {
+      authorized: false,
+      error: "Authentication required. Please sign in to execute on-chain relay actions.",
+    };
   }
 
   // Role permissions matrix
@@ -57,6 +62,21 @@ async function authorizeRelayCall(req: NextRequest, action: string) {
 
 export async function POST(req: NextRequest) {
   try {
+    // Fail immediately outside local development if PRIVATE_KEY is missing
+    const isLocalDev =
+      process.env.NODE_ENV !== "production" &&
+      ((SUPPORTED_CHAIN_ID as number) === 31337 || process.env.NODE_ENV === "test");
+
+    if (!process.env.PRIVATE_KEY?.trim() && !isLocalDev) {
+      return NextResponse.json(
+        {
+          error:
+            "Server Configuration Error: PRIVATE_KEY environment variable is required outside local development.",
+        },
+        { status: 500 }
+      );
+    }
+
     const body = await req.json();
     const { action, universityCode, companyCode, data } = body;
 
@@ -72,31 +92,50 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // -------------------------------------------------------------------------
     // 1. REGISTER STUDENT
+    // -------------------------------------------------------------------------
     if (action === "registerStudent") {
       const { usn, name, course, gradYear, percentage } = data || {};
       if (!usn || !name) {
         return NextResponse.json({ error: "Candidate USN and Name are required" }, { status: 400 });
       }
 
-      const { contract } = getServerContract("university");
-      const cleanCode = (universityCode || authCheck.session?.entityInfo?.code || "VTU-KA-001")
-        .trim()
-        .toUpperCase();
+      // CRITICAL SECURITY: Take university ID strictly from verified session, never trust body universityCode
+      let uId = 0;
+      if (authCheck.session?.role === "university") {
+        uId = Number(authCheck.session.entityInfo?.id);
+        if (!uId || uId <= 0) {
+          return NextResponse.json(
+            { error: "Forbidden: University ID not found in verified session." },
+            { status: 403 }
+          );
+        }
 
-      const uIdBig = await contract.universityCodeToId(cleanCode);
-      const uId = Number(uIdBig);
-      if (uId === 0) {
-        return NextResponse.json(
-          { error: `University code "${cleanCode}" is not accredited on the blockchain.` },
-          { status: 403 }
-        );
+        // Prevent cross-institutional impersonation if client provided a conflicting universityCode
+        if (universityCode && authCheck.session.entityInfo?.code) {
+          if (universityCode.trim().toUpperCase() !== authCheck.session.entityInfo.code.trim().toUpperCase()) {
+            return NextResponse.json(
+              { error: "Forbidden: Cross-institutional impersonation detected. You cannot register students for another university." },
+              { status: 403 }
+            );
+          }
+        }
+      } else if (authCheck.role === "admin") {
+        if (data?.universityId) {
+          uId = Number(data.universityId);
+        } else if (universityCode) {
+          const uIdBig = await getReadOnlyServerContract().universityCodeToId(universityCode.trim().toUpperCase());
+          uId = Number(uIdBig);
+        }
+        if (!uId || uId <= 0) uId = 1;
       }
 
+      const { contract } = getServerContract("university");
       const univData = await contract.universities(uId);
       if (!univData.active) {
         return NextResponse.json(
-          { error: `University "${cleanCode}" is deactivated and cannot onboard candidates.` },
+          { error: `University authority #${uId} is deactivated on-chain and cannot onboard candidates.` },
           { status: 403 }
         );
       }
@@ -128,7 +167,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // -------------------------------------------------------------------------
     // 2. ISSUE CREDENTIAL
+    // -------------------------------------------------------------------------
     if (action === "issueCredential") {
       const { studentId, documentType, documentHash, ipfsCID } = data || {};
       if (!studentId || !documentHash || !ipfsCID) {
@@ -138,24 +179,40 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const { contract } = getServerContract("university");
-      const cleanCode = (universityCode || authCheck.session?.entityInfo?.code || "VTU-KA-001")
-        .trim()
-        .toUpperCase();
+      // CRITICAL SECURITY: Take university ID strictly from verified session
+      let uId = 0;
+      if (authCheck.session?.role === "university") {
+        uId = Number(authCheck.session.entityInfo?.id);
+        if (!uId || uId <= 0) {
+          return NextResponse.json(
+            { error: "Forbidden: University ID not found in verified session." },
+            { status: 403 }
+          );
+        }
 
-      const uIdBig = await contract.universityCodeToId(cleanCode);
-      const uId = Number(uIdBig);
-      if (uId === 0) {
-        return NextResponse.json(
-          { error: `University code "${cleanCode}" not found on ledger` },
-          { status: 403 }
-        );
+        if (universityCode && authCheck.session.entityInfo?.code) {
+          if (universityCode.trim().toUpperCase() !== authCheck.session.entityInfo.code.trim().toUpperCase()) {
+            return NextResponse.json(
+              { error: "Forbidden: Cross-institutional impersonation detected. You cannot issue credentials for another university." },
+              { status: 403 }
+            );
+          }
+        }
+      } else if (authCheck.role === "admin") {
+        if (data?.universityId) {
+          uId = Number(data.universityId);
+        } else if (universityCode) {
+          const uIdBig = await getReadOnlyServerContract().universityCodeToId(universityCode.trim().toUpperCase());
+          uId = Number(uIdBig);
+        }
+        if (!uId || uId <= 0) uId = 1;
       }
 
+      const { contract } = getServerContract("university");
       const univData = await contract.universities(uId);
       if (!univData.active) {
         return NextResponse.json(
-          { error: `University "${cleanCode}" is currently deactivated` },
+          { error: `University authority #${uId} is currently deactivated.` },
           { status: 403 }
         );
       }
@@ -195,7 +252,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // -------------------------------------------------------------------------
     // 3. SUBMIT ON-CHAIN ACCESS REQUEST (PUBLIC)
+    // -------------------------------------------------------------------------
     if (action === "requestAccess") {
       const { entityType, name, proposedCode, contactEmail, wallet } = data || {};
       if (!name || !proposedCode || !contactEmail) {
@@ -220,7 +279,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // -------------------------------------------------------------------------
     // 4. APPROVE ON-CHAIN ACCESS REQUEST (ADMIN ONLY)
+    // -------------------------------------------------------------------------
     if (action === "approveAccessRequest") {
       const { requestId } = data || {};
       if (!requestId) {
@@ -237,17 +298,41 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // -------------------------------------------------------------------------
     // 5. REVIEW STUDENT ACHIEVEMENT (UNIVERSITY ONLY)
+    // -------------------------------------------------------------------------
     if (action === "reviewAchievement") {
       const { achievementId, status, remarks } = data || {};
+
+      let uId = 0;
+      if (authCheck.session?.role === "university") {
+        uId = Number(authCheck.session.entityInfo?.id);
+        if (!uId || uId <= 0) {
+          return NextResponse.json(
+            { error: "Forbidden: University ID not found in verified session." },
+            { status: 403 }
+          );
+        }
+
+        if (universityCode && authCheck.session.entityInfo?.code) {
+          if (universityCode.trim().toUpperCase() !== authCheck.session.entityInfo.code.trim().toUpperCase()) {
+            return NextResponse.json(
+              { error: "Forbidden: Cross-institutional impersonation detected. You cannot review achievements for another university." },
+              { status: 403 }
+            );
+          }
+        }
+      } else if (authCheck.role === "admin") {
+        if (data?.universityId) {
+          uId = Number(data.universityId);
+        } else if (universityCode) {
+          const uIdBig = await getReadOnlyServerContract().universityCodeToId(universityCode.trim().toUpperCase());
+          uId = Number(uIdBig);
+        }
+        if (!uId || uId <= 0) uId = 1;
+      }
+
       const { contract } = getServerContract("university");
-
-      const cleanCode = (universityCode || authCheck.session?.entityInfo?.code || "VTU-KA-001")
-        .trim()
-        .toUpperCase();
-      const uIdBig = await contract.universityCodeToId(cleanCode);
-      const uId = Number(uIdBig);
-
       const tx = await contract.reviewAchievement(achievementId, uId, status, remarks || "");
       const receipt = await tx.wait();
 
@@ -257,12 +342,33 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // -------------------------------------------------------------------------
     // 6. SUBMIT STUDENT ACHIEVEMENT (STUDENT ONLY)
+    // -------------------------------------------------------------------------
     if (action === "submitAchievement") {
       const { usn, title, issuerOrg, category, documentHash, ipfsCID } = data || {};
-      const { contract } = getServerContract("admin");
 
-      const targetUsn = (usn || authCheck.session?.studentUSN || "").trim().toUpperCase();
+      let targetUsn = "";
+      if (authCheck.session?.role === "student") {
+        targetUsn = authCheck.session.studentUSN || "";
+        if (!targetUsn) {
+          return NextResponse.json(
+            { error: "Forbidden: Student USN not found in verified session." },
+            { status: 403 }
+          );
+        }
+
+        if (usn && usn.trim().toUpperCase() !== targetUsn.toUpperCase()) {
+          return NextResponse.json(
+            { error: "Forbidden: Impersonation detected. You cannot submit achievements for another student." },
+            { status: 403 }
+          );
+        }
+      } else if (authCheck.role === "admin") {
+        targetUsn = (usn || "").trim().toUpperCase();
+      }
+
+      const { contract } = getServerContract("admin");
       const tx = await contract.submitAchievement(
         targetUsn,
         title || "",
@@ -279,18 +385,42 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // -------------------------------------------------------------------------
     // 7. RECORD RECRUITER VERIFICATION (COMPANY ONLY)
+    // -------------------------------------------------------------------------
     if (action === "recordVerification") {
       const { credentialId, hashMatched, isAuthentic, documentType } = data || {};
-      const { contract } = getServerContract("company");
 
-      let cId = 1;
-      const cleanComp = (companyCode || authCheck.session?.entityInfo?.code || "").trim().toUpperCase();
-      if (cleanComp) {
-        const cIdBig = await contract.companyCodeToId(cleanComp);
-        cId = Number(cIdBig) || 1;
+      // CRITICAL SECURITY: Take company ID strictly from verified session
+      let cId = 0;
+      if (authCheck.session?.role === "company") {
+        cId = Number(authCheck.session.entityInfo?.id);
+        if (!cId || cId <= 0) {
+          return NextResponse.json(
+            { error: "Forbidden: Company ID not found in verified session." },
+            { status: 403 }
+          );
+        }
+
+        if (companyCode && authCheck.session.entityInfo?.code) {
+          if (companyCode.trim().toUpperCase() !== authCheck.session.entityInfo.code.trim().toUpperCase()) {
+            return NextResponse.json(
+              { error: "Forbidden: Cross-corporate impersonation detected. You cannot record verifications on behalf of another company." },
+              { status: 403 }
+            );
+          }
+        }
+      } else if (authCheck.role === "admin") {
+        if (data?.companyId) {
+          cId = Number(data.companyId);
+        } else if (companyCode) {
+          const cIdBig = await getReadOnlyServerContract().companyCodeToId(companyCode.trim().toUpperCase());
+          cId = Number(cIdBig);
+        }
+        if (!cId || cId <= 0) cId = 1;
       }
 
+      const { contract } = getServerContract("company");
       const tx = await contract.recordVerificationByCompany(
         cId,
         credentialId || 0,

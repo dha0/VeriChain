@@ -50,42 +50,8 @@ function readRecords(): EntityCredentialRecord[] {
     }
   } catch {}
 
-  // Initial seed with salted bcrypt hashes for initial institutions
-  // Default dev access codes: "VTU-PASS-2026", "INFY-PASS-2026", "TCS-PASS-2026"
-  const defaultSaltRounds = 10;
-  const initial: EntityCredentialRecord[] = [
-    {
-      entityType: "university",
-      entityId: 1,
-      codeIdentifier: "VTU-KA-001",
-      name: "Visvesvaraya Technological University",
-      wallet: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-      hashedCode: bcrypt.hashSync("VTU-PASS-2026", defaultSaltRounds),
-      createdAt: Date.now(),
-    },
-    {
-      entityType: "company",
-      entityId: 1,
-      codeIdentifier: "INFY-BLR-01",
-      name: "Infosys Technologies Ltd",
-      wallet: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
-      hashedCode: bcrypt.hashSync("INFY-PASS-2026", defaultSaltRounds),
-      createdAt: Date.now(),
-    },
-    {
-      entityType: "company",
-      entityId: 2,
-      codeIdentifier: "TCS-MUM-01",
-      name: "Tata Consultancy Services (TCS)",
-      wallet: "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
-      hashedCode: bcrypt.hashSync("TCS-PASS-2026", defaultSaltRounds),
-      createdAt: Date.now(),
-    },
-  ];
-
-  global.__accessCredentialsCache = initial;
-  writeRecords(initial);
-  return initial;
+  global.__accessCredentialsCache = [];
+  return [];
 }
 
 function writeRecords(data: EntityCredentialRecord[]) {

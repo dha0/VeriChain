@@ -4,6 +4,8 @@ import {
   recordFailedAttempt,
   resetFailedAttempts,
   verifyWalletSignature,
+  generateStudentOTP,
+  verifyStudentOTP,
   createSessionJWT,
   setSessionCookie,
   SessionPayload,
@@ -19,7 +21,17 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { loginType, entityType, codeIdentifier, accessCode, wallet, message, signature, usn } = body;
+    const {
+      loginType,
+      entityType,
+      codeIdentifier,
+      accessCode,
+      wallet,
+      message,
+      signature,
+      usn,
+      otp,
+    } = body;
 
     const rateLimitKey = `${ip}:${codeIdentifier || wallet || usn || "global"}`;
     const rateCheck = checkRateLimit(rateLimitKey);
@@ -39,27 +51,71 @@ export async function POST(req: NextRequest) {
     const contract = getReadOnlyServerContract();
 
     // -------------------------------------------------------------------------
+    // 0. STUDENT OTP REQUEST (Generate & Dispatch 6-digit OTP)
+    // -------------------------------------------------------------------------
+    if (loginType === "student_request_otp") {
+      if (!usn) {
+        return NextResponse.json({ error: "Candidate USN is required." }, { status: 400 });
+      }
+
+      const cleanUSN = usn.trim().toUpperCase();
+      try {
+        const s = await contract.getStudentByUSN(cleanUSN);
+        if (!s || !s.exists) {
+          const attempt = recordFailedAttempt(rateLimitKey);
+          return NextResponse.json(
+            {
+              error: `Student USN "${cleanUSN}" was not found on the blockchain registry.`,
+              remainingAttempts: attempt.remainingAttempts,
+            },
+            { status: 404 }
+          );
+        }
+
+        const { otp: generatedOtp } = generateStudentOTP(cleanUSN);
+        console.log(
+          `[AUTH OTP DISPATCH] Verification code for student ${cleanUSN} (${s.name}): ${generatedOtp}`
+        );
+
+        return NextResponse.json({
+          success: true,
+          message: `6-digit security OTP sent to student's registered institutional email for ${cleanUSN}.`,
+          devOTP: process.env.NODE_ENV !== "production" ? generatedOtp : undefined,
+        });
+      } catch (err: any) {
+        const attempt = recordFailedAttempt(rateLimitKey);
+        return NextResponse.json(
+          {
+            error: err.reason || err.message || `Student USN "${cleanUSN}" not found on blockchain.`,
+            remainingAttempts: attempt.remainingAttempts,
+          },
+          { status: 404 }
+        );
+      }
+    }
+
+    // -------------------------------------------------------------------------
     // 1. INSTITUTIONAL ACCESS CODE LOGIN (University / Company)
     // -------------------------------------------------------------------------
-    if (loginType === "code") {
-      if (!codeIdentifier || !accessCode) {
+    else if (loginType === "code") {
+      if (!codeIdentifier && !accessCode) {
         return NextResponse.json(
-          { error: "Both Institutional Code Identifier and Secret Access Code are required." },
+          { error: "Institutional Identifier or Secret Access Passkey is required." },
           { status: 400 }
         );
       }
 
       const verifiedRecord = verifyEntityAccessCode(
         entityType || "university",
-        codeIdentifier,
-        accessCode
+        codeIdentifier || "",
+        accessCode || ""
       );
 
       if (!verifiedRecord) {
         const attempt = recordFailedAttempt(rateLimitKey);
         return NextResponse.json(
           {
-            error: `Invalid access code credentials. ${attempt.remainingAttempts} attempts remaining before temporary lockout.`,
+            error: `Invalid access credentials. ${attempt.remainingAttempts} attempts remaining before temporary lockout.`,
             remainingAttempts: attempt.remainingAttempts,
           },
           { status: 401 }
@@ -76,10 +132,17 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        // Optional SIWE wallet check if wallet signature provided
+        // SIWE wallet verification if wallet signature is attached
         if (signature && message && wallet) {
           if (!verifyWalletSignature(wallet, message, signature)) {
-            return NextResponse.json({ error: "Invalid cryptographic wallet signature" }, { status: 401 });
+            const attempt = recordFailedAttempt(rateLimitKey);
+            return NextResponse.json(
+              {
+                error: "Invalid cryptographic wallet signature.",
+                remainingAttempts: attempt.remainingAttempts,
+              },
+              { status: 401 }
+            );
           }
         }
 
@@ -105,7 +168,14 @@ export async function POST(req: NextRequest) {
 
         if (signature && message && wallet) {
           if (!verifyWalletSignature(wallet, message, signature)) {
-            return NextResponse.json({ error: "Invalid cryptographic wallet signature" }, { status: 401 });
+            const attempt = recordFailedAttempt(rateLimitKey);
+            return NextResponse.json(
+              {
+                error: "Invalid cryptographic wallet signature.",
+                remainingAttempts: attempt.remainingAttempts,
+              },
+              { status: 401 }
+            );
           }
         }
 
@@ -139,7 +209,7 @@ export async function POST(req: NextRequest) {
         const attempt = recordFailedAttempt(rateLimitKey);
         return NextResponse.json(
           {
-            error: "Cryptographic signature verification failed. Nonce may have expired or signature is invalid.",
+            error: "Cryptographic signature verification failed. Nonce may have expired, been replayed, or signature is invalid.",
             remainingAttempts: attempt.remainingAttempts,
           },
           { status: 401 }
@@ -151,7 +221,7 @@ export async function POST(req: NextRequest) {
       // Check if wallet is Admin
       try {
         const adminAddr = (await contract.admin()).toLowerCase();
-        if (adminAddr === cleanWallet) {
+        if (adminAddr === cleanWallet && adminAddr !== "0x0000000000000000000000000000000000000000") {
           sessionPayload = {
             role: "admin",
             account: wallet,
@@ -227,7 +297,7 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------------------------------
-    // 3. CANDIDATE STUDENT USN LOGIN
+    // 3. CANDIDATE STUDENT LOGIN (Requires Email OTP OR Wallet SIWE Signature)
     // -------------------------------------------------------------------------
     else if (loginType === "student") {
       if (!usn) {
@@ -235,6 +305,42 @@ export async function POST(req: NextRequest) {
       }
 
       const cleanUSN = usn.trim().toUpperCase();
+
+      // Enforce: USN alone is NOT permitted. Must have OTP or SIWE wallet signature
+      if (otp) {
+        const isOtpValid = verifyStudentOTP(cleanUSN, otp);
+        if (!isOtpValid) {
+          const attempt = recordFailedAttempt(rateLimitKey);
+          return NextResponse.json(
+            {
+              error: "Invalid or expired 6-digit OTP. Please request a new verification code.",
+              remainingAttempts: attempt.remainingAttempts,
+            },
+            { status: 401 }
+          );
+        }
+      } else if (wallet && message && signature) {
+        const isSigValid = verifyWalletSignature(wallet, message, signature);
+        if (!isSigValid) {
+          const attempt = recordFailedAttempt(rateLimitKey);
+          return NextResponse.json(
+            {
+              error: "Invalid cryptographic wallet signature.",
+              remainingAttempts: attempt.remainingAttempts,
+            },
+            { status: 401 }
+          );
+        }
+      } else {
+        return NextResponse.json(
+          {
+            error:
+              "Unauthorized: Student login requires a 6-digit Email OTP or verified Web3 wallet signature. USN alone is not permitted.",
+          },
+          { status: 401 }
+        );
+      }
+
       try {
         const s = await contract.getStudentByUSN(cleanUSN);
         if (!s || !s.exists) {
@@ -250,7 +356,7 @@ export async function POST(req: NextRequest) {
 
         sessionPayload = {
           role: "student",
-          account: null,
+          account: wallet || null,
           studentUSN: cleanUSN,
           entityInfo: {
             id: Number(s.id),
