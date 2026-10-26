@@ -1334,6 +1334,11 @@
         "type": "string"
       },
       {
+        "internalType": "string",
+        "name": "affiliatingUniversity",
+        "type": "string"
+      },
+      {
         "internalType": "address",
         "name": "wallet",
         "type": "address"
@@ -1718,6 +1723,40 @@
         "type": "string"
       },
       {
+        "internalType": "string",
+        "name": "_affiliatingUniversity",
+        "type": "string"
+      },
+      {
+        "internalType": "address",
+        "name": "_wallet",
+        "type": "address"
+      }
+    ],
+    "name": "registerUniversity",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "_name",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "_universityCode",
+        "type": "string"
+      },
+      {
         "internalType": "address",
         "name": "_wallet",
         "type": "address"
@@ -1981,6 +2020,11 @@
       {
         "internalType": "string",
         "name": "universityCode",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "affiliatingUniversity",
         "type": "string"
       },
       {

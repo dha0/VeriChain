@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 function isAdminWalletRequest(req: NextRequest): boolean {
   const adminWalletHeader = req.headers.get("x-admin-wallet")?.trim().toLowerCase();
   const configuredAdmin = (process.env.ADMIN_WALLET || process.env.NEXT_PUBLIC_ADMIN_WALLET || "").trim().toLowerCase();
-  const hardcodedAdmin = "0x4f1a429909a9024533ab1801517e152ac6cc3a14";
+  const hardcodedAdmin = "0x59fd799647b8b5718fbad523a1c5b87d600c1fb8";
   return Boolean(
     adminWalletHeader &&
     (adminWalletHeader === hardcodedAdmin || (configuredAdmin && adminWalletHeader === configuredAdmin))

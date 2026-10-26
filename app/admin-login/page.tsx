@@ -144,7 +144,7 @@ export default function AdminLoginPage() {
               <span>{isConnecting ? "Verifying Administrator Signature..." : "Connect Admin Wallet"}</span>
             </button>
             <p className="text-[11px] text-slate-500">
-              Authorized admin wallet (e.g. 0x4F1A...3A14 or contract owner) required.
+              Authorized admin wallet (e.g. 0x59FD...1Fb8 or contract owner) required.
             </p>
           </div>
         )}

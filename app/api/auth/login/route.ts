@@ -314,7 +314,7 @@ export async function POST(req: NextRequest) {
         }
 
         const envAdmin = (process.env.ADMIN_WALLET || process.env.NEXT_PUBLIC_ADMIN_WALLET || "").trim().toLowerCase();
-        const userProvidedAdmin = "0x4f1a429909a9024533ab1801517e152ac6cc3a14";
+        const userProvidedAdmin = "0x59fd799647b8b5718fbad523a1c5b87d600c1fb8";
 
         if (cleanWallet === userProvidedAdmin || (envAdmin && cleanWallet === envAdmin)) {
           isWalletAdmin = true;

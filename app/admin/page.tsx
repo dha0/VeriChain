@@ -140,7 +140,7 @@ export default function AdminPage() {
     }
 
     try {
-      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+      const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
       await fetch("/api/requests", {
         method: "POST",
         headers: {
@@ -170,7 +170,7 @@ export default function AdminPage() {
       // Check admin status from session, MetaMask, and environment
       let userIsAdmin = role === "admin";
       const configuredAdmin = (process.env.NEXT_PUBLIC_ADMIN_WALLET || "").trim().toLowerCase();
-      const hardcodedAdmin = "0x4f1a429909a9024533ab1801517e152ac6cc3a14";
+      const hardcodedAdmin = "0x59fd799647b8b5718fbad523a1c5b87d600c1fb8";
 
       if (isMetaMaskInstalled()) {
         try {
@@ -269,7 +269,7 @@ export default function AdminPage() {
 
       // Load Institutional Access Requests from API
       try {
-        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+        const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
         const reqRes = await fetch("/api/requests", {
           headers: { "x-admin-wallet": adminWallet },
         });
@@ -349,7 +349,7 @@ export default function AdminPage() {
       // On-chain registration via relayer (with signer fallback)
       let onChainOk = false;
       try {
-        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+        const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
         const relayRes = await fetch("/api/blockchain/relay", {
           method: "POST",
           headers: {
@@ -394,7 +394,7 @@ export default function AdminPage() {
 
       // Mark approved in API and on-chain, retrieve one-time secret passkey
       try {
-        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+        const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
         const approveRes = await fetch("/api/requests", {
           method: "POST",
           headers: {
@@ -443,7 +443,7 @@ export default function AdminPage() {
   const handleRejectRequest = async (requestId: number) => {
     if (!confirm("Are you sure you want to dismiss this access request?")) return;
     try {
-      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+      const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
       setAccessRequests((prev) => prev.filter((r) => r.requestId !== requestId));
       await fetch("/api/requests", {
         method: "POST",
@@ -462,7 +462,7 @@ export default function AdminPage() {
   const handleClearAllRequests = async () => {
     if (!confirm("Are you sure you want to dismiss all pending access requests?")) return;
     try {
-      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+      const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
       setAccessRequests([]);
       await fetch("/api/requests", {
         method: "POST",
@@ -497,7 +497,7 @@ export default function AdminPage() {
 
       let onChainOk = false;
       try {
-        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+        const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
         const relayRes = await fetch("/api/blockchain/relay", {
           method: "POST",
           headers: {
@@ -588,7 +588,7 @@ export default function AdminPage() {
 
       let onChainOk = false;
       try {
-        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+        const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
         const relayRes = await fetch("/api/blockchain/relay", {
           method: "POST",
           headers: {
@@ -663,7 +663,7 @@ export default function AdminPage() {
   const toggleUniversityStatus = async (id: number, currentActive: boolean) => {
     setStatusMessage(null);
     try {
-      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+      const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
       let ok = false;
       try {
         const res = await fetch("/api/blockchain/relay", {
@@ -711,7 +711,7 @@ export default function AdminPage() {
   const toggleCompanyStatus = async (id: number, currentActive: boolean) => {
     setStatusMessage(null);
     try {
-      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+      const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
       let ok = false;
       try {
         const res = await fetch("/api/blockchain/relay", {
