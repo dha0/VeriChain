@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getReadOnlyServerContract } from "@/lib/serverContract";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 // Cache in memory for 15 seconds to avoid rate limiting public RPCs
 let cachedStats: {
   universities: number;

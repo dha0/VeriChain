@@ -15,6 +15,8 @@ const TEMPLATE_HEADERS = [
   "MaxMarks",
 ];
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const format = (searchParams.get("format") || "csv").toLowerCase();

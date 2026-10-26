@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { generateStudentReportPDF, SubjectMark } from "@/lib/pdfGenerator";
 import { computeCanonicalRecordHash } from "@/lib/marksEngine";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
   try {
     // 1. Session Authentication Required

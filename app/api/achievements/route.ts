@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { parseAndValidateUSN } from "@/lib/usnParser";
 import { getServerContract } from "@/lib/serverContract";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
   const session = await getServerSession(req);
   const { searchParams } = new URL(req.url);

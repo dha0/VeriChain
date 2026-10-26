@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateAuthNonce, buildSIWEMessage } from "@/lib/serverAuth";
 import { ethers } from "ethers";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);

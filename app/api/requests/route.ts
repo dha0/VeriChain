@@ -6,6 +6,8 @@ import { generateAndStoreAccessCode } from "@/lib/accessCodeStore";
 import { prisma } from "@/lib/prisma";
 import { parseAndValidateUSN } from "@/lib/usnParser";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
   const session = await getServerSession(req);
   if (!session || (session.role !== "admin" && session.role !== "university")) {
