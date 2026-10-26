@@ -17,6 +17,7 @@ import {
   Check,
   X,
   Trash2,
+  Key,
   Send,
   Sparkles,
   Layers,
@@ -155,6 +156,48 @@ export default function AdminPage() {
       text: `${entityType === "university" ? "University" : "Company"} (${cleanCode}) removed successfully.`,
       type: "info",
     });
+  };
+
+  const handleGeneratePasskey = async (
+    entityType: "university" | "company",
+    code: string,
+    name: string,
+    wallet: string,
+    entityId: number
+  ) => {
+    try {
+      const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
+      const cleanCode = (code || "").trim().toUpperCase();
+      setStatusMessage({ text: `Generating secret passkey for ${cleanCode}...`, type: "info" });
+      const res = await fetch("/api/requests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-wallet": adminWallet,
+        },
+        body: JSON.stringify({
+          action: "generate_code",
+          entityType,
+          entityId,
+          codeIdentifier: cleanCode,
+          name,
+          wallet,
+        }),
+      });
+      const data = await res.json();
+      if (data.secretAccessCode) {
+        setNewSecretModal({
+          name,
+          code: cleanCode,
+          secret: data.secretAccessCode,
+        });
+        setStatusMessage({ text: `Secret passkey ready for ${name} (${cleanCode})!`, type: "success" });
+      } else {
+        setStatusMessage({ text: data.error || "Failed to generate passkey", type: "error" });
+      }
+    } catch (e: any) {
+      setStatusMessage({ text: e.message || "Failed to generate passkey", type: "error" });
+    }
   };
 
   useEffect(() => {
@@ -524,9 +567,13 @@ export default function AdminPage() {
 
       // Generate secret access passkey and store salted bcrypt hash
       try {
+        const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
         const genRes = await fetch("/api/requests", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-wallet": adminWallet,
+          },
           body: JSON.stringify({
             action: "generate_code",
             entityType: "university",
@@ -615,9 +662,13 @@ export default function AdminPage() {
 
       // Generate secret access passkey and store salted bcrypt hash
       try {
+        const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
         const genRes = await fetch("/api/requests", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-wallet": adminWallet,
+          },
           body: JSON.stringify({
             action: "generate_code",
             entityType: "company",
@@ -1113,6 +1164,13 @@ export default function AdminPage() {
                       <div className="flex items-center gap-2">
                         <StatusBadge status={u.active ? "active" : "inactive"} size="sm" />
                         <button
+                          onClick={() => handleGeneratePasskey("university", u.universityCode, u.name, u.wallet, u.id)}
+                          className="p-1.5 rounded-lg text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 transition-colors"
+                          title="Generate / View Secret Passkey"
+                        >
+                          <Key className="w-3.5 h-3.5" />
+                        </button>
+                        <button
                           onClick={() => toggleUniversityStatus(u.id, u.active)}
                           className={`p-1.5 rounded-lg transition-colors ${
                             u.active
@@ -1229,6 +1287,13 @@ export default function AdminPage() {
                       </div>
                       <div className="flex items-center gap-2">
                         <StatusBadge status={c.active ? "active" : "inactive"} size="sm" />
+                        <button
+                          onClick={() => handleGeneratePasskey("company", c.companyCode, c.name, c.wallet, c.id)}
+                          className="p-1.5 rounded-lg text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 transition-colors"
+                          title="Generate / View Secret Passkey"
+                        >
+                          <Key className="w-3.5 h-3.5" />
+                        </button>
                         <button
                           onClick={() => toggleCompanyStatus(c.id, c.active)}
                           className={`p-1.5 rounded-lg transition-colors ${

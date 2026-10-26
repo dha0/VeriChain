@@ -293,17 +293,23 @@ export async function POST(req: NextRequest) {
     // Admin Action: Generate Secret Access Code for Manual Registration
     // ----------------------------------------------------
     if (action === "generate_code") {
-      const { entityType, entityId, codeIdentifier, name, wallet } = entityData || {};
+      const data = entityData || body || {};
+      const entityType = (data.entityType || body.entityType || "university") as "university" | "company";
+      const entityId = Number(data.entityId || body.entityId) || 1;
+      const codeIdentifier = (data.codeIdentifier || data.code || body.codeIdentifier || body.code || "").trim().toUpperCase();
+      const name = (data.name || body.name || "").trim();
+      const wallet = data.wallet || body.wallet || "0x0000000000000000000000000000000000000000";
+
       if (!codeIdentifier || !name) {
         return NextResponse.json({ error: "Missing entity details for code generation" }, { status: 400 });
       }
 
       const secretAccessCode = await generateAndStoreAccessCode(
-        entityType || "university",
-        Number(entityId) || 1,
+        entityType,
+        entityId,
         codeIdentifier,
         name,
-        wallet || "0x0000000000000000000000000000000000000000"
+        wallet
       );
 
       return NextResponse.json({
