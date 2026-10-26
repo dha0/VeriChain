@@ -21,6 +21,7 @@ import {
   Sparkles,
   Layers,
   FileCheck,
+  Mail,
 } from "lucide-react";
 import { ethers } from "ethers";
 import {
@@ -77,8 +78,10 @@ export default function AdminPage() {
     name: string;
     code: string;
     secret: string;
+    email?: string;
   } | null>(null);
   const [copiedSecret, setCopiedSecret] = useState(false);
+  const [copiedFullDetails, setCopiedFullDetails] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -192,7 +195,10 @@ export default function AdminPage() {
 
       // Load Institutional Access Requests from API
       try {
-        const reqRes = await fetch("/api/requests");
+        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+        const reqRes = await fetch("/api/requests", {
+          headers: { "x-admin-wallet": adminWallet },
+        });
         const reqData = await reqRes.json();
         if (reqData.requests) {
           setAccessRequests(reqData.requests);
@@ -276,9 +282,13 @@ export default function AdminPage() {
 
       // Mark approved in API and on-chain, retrieve one-time secret passkey
       try {
+        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
         const approveRes = await fetch("/api/requests", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-wallet": adminWallet,
+          },
           body: JSON.stringify({ action: "approve", requestId: req.requestId }),
         });
         const approveData = await approveRes.json();
@@ -287,6 +297,7 @@ export default function AdminPage() {
             name: req.name,
             code: req.proposedCode,
             secret: approveData.secretAccessCode,
+            email: req.contactEmail || approveData.contactEmail || "",
           });
         }
       } catch (e) {}
@@ -320,10 +331,14 @@ export default function AdminPage() {
   const handleRejectRequest = async (requestId: number) => {
     if (!confirm("Are you sure you want to dismiss this access request?")) return;
     try {
+      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
       setAccessRequests((prev) => prev.filter((r) => r.requestId !== requestId));
       await fetch("/api/requests", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-wallet": adminWallet,
+        },
         body: JSON.stringify({ action: "reject", requestId }),
       });
       await fetchData();
@@ -335,10 +350,14 @@ export default function AdminPage() {
   const handleClearAllRequests = async () => {
     if (!confirm("Are you sure you want to dismiss all pending access requests?")) return;
     try {
+      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
       setAccessRequests([]);
       await fetch("/api/requests", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-wallet": adminWallet,
+        },
         body: JSON.stringify({ action: "clear_all" }),
       });
       await fetchData();
@@ -1197,9 +1216,21 @@ export default function AdminPage() {
                 Only its salted bcrypt hash is stored in the database. Copy and securely share it with the institution authority.
               </div>
 
+              {newSecretModal.email && (
+                <div className="p-3 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs flex items-start gap-2">
+                  <Mail className="w-4 h-4 shrink-0 mt-0.5 text-blue-400" />
+                  <div>
+                    <strong>Dispatched via Email:</strong> Onboarding passkey and login instructions have been automatically sent to <strong>{newSecretModal.email}</strong>.
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-1.5 text-xs text-slate-300">
                 <div><strong>Organization:</strong> {newSecretModal.name}</div>
                 <div><strong>Code Identifier:</strong> <span className="font-mono text-white uppercase">{newSecretModal.code}</span></div>
+                {newSecretModal.email && (
+                  <div><strong>Contact Email:</strong> <span className="font-mono text-slate-400">{newSecretModal.email}</span></div>
+                )}
               </div>
 
               <div className="space-y-1">
@@ -1222,21 +1253,36 @@ export default function AdminPage() {
                     }}
                     className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shrink-0 transition-colors"
                   >
-                    {copiedSecret ? "Copied!" : "Copy"}
+                    {copiedSecret ? "Copied!" : "Copy Key"}
                   </button>
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setNewSecretModal(null);
-                  setCopiedSecret(false);
-                }}
-                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition-colors mt-2"
-              >
-                I have securely saved this key
-              </button>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const onboardingText = `VeriChain Onboarding Credentials\n\nOrganization: ${newSecretModal.name}\nCode Identifier: ${newSecretModal.code}\nSecret Passkey: ${newSecretModal.secret}\nPortal Login URL: https://blockchain-document-verification-one.vercel.app/login`;
+                    navigator.clipboard.writeText(onboardingText);
+                    setCopiedFullDetails(true);
+                    setTimeout(() => setCopiedFullDetails(false), 3000);
+                  }}
+                  className="flex-1 py-2 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-500/40 text-indigo-300 text-xs font-semibold transition-colors"
+                >
+                  {copiedFullDetails ? "Copied Full Summary!" : "Copy Full Onboarding Info"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewSecretModal(null);
+                    setCopiedSecret(false);
+                    setCopiedFullDetails(false);
+                  }}
+                  className="py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition-colors"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         )}
