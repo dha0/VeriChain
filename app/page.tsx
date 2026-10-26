@@ -46,6 +46,9 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Credential, Achievement, AchievementStatus, DigiLockerDocument } from "@/types";
 import { CandidateSummaryCharts } from "@/components/CandidateSummaryCharts";
 import { RoleGuard } from "@/components/RoleGuard";
+import { ProcessStepper } from "@/components/ProcessStepper";
+import { getStudentStepperState } from "@/lib/stepperEngine";
+import { ChainStatsBar } from "@/components/ChainStatsBar";
 import { StudentProgressStepper, ProgressStep, StepState } from "@/components/StudentProgressStepper";
 import { useAuth } from "@/context/AuthContext";
 
@@ -376,10 +379,16 @@ export default function StudentPage() {
   })();
 
   return (
-    <RoleGuard
-      allowedRoles={["student", "admin", "university", "company"]}
-      portalName="Student Digital Credential Locker"
-    >
+    <>
+      {/* ── Public Live Chain Stats ── always visible, no login needed ── */}
+      <div className="pt-6 pb-2">
+        <ChainStatsBar />
+      </div>
+
+      <RoleGuard
+        allowedRoles={["student", "admin", "university", "company"]}
+        portalName="Student Digital Credential Locker"
+      >
       <div className="max-w-6xl mx-auto space-y-8 rounded-3xl p-2 sm:p-4 bg-gradient-to-b from-indigo-950/20 via-slate-950/60 to-slate-950">
         {/* Header */}
         <div className="text-center space-y-3">
@@ -972,6 +981,7 @@ export default function StudentPage() {
           </div>
         )}
       </div>
-    </RoleGuard>
+      </RoleGuard>
+    </>
   );
 }

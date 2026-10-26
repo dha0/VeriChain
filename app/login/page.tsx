@@ -19,6 +19,7 @@ import {
   X,
   FileQuestion,
   Wallet,
+  Shield,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -478,22 +479,6 @@ export default function LoginPage() {
                   </button>
                 </form>
 
-                <div className="relative flex py-1 items-center">
-                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
-                  <span className="flex-shrink mx-2 text-[10px] text-slate-400 uppercase font-mono">or Web3 SIWE</span>
-                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleUnivWalletSubmit}
-                  disabled={isLoggingIn}
-                  className="w-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all border border-slate-300 dark:border-slate-700 flex items-center justify-center gap-2"
-                >
-                  <Wallet className="w-4 h-4 text-sky-500" />
-                  <span>Sign In with MetaMask (SIWE)</span>
-                </button>
-
                 <div className="pt-2 text-center">
                   <button
                     type="button"
@@ -582,22 +567,6 @@ export default function LoginPage() {
                     <span>Sign In with Corporate Code</span>
                   </button>
                 </form>
-
-                <div className="relative flex py-1 items-center">
-                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
-                  <span className="flex-shrink mx-2 text-[10px] text-slate-400 uppercase font-mono">or Web3 SIWE</span>
-                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleCompWalletSubmit}
-                  disabled={isLoggingIn}
-                  className="w-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all border border-slate-300 dark:border-slate-700 flex items-center justify-center gap-2"
-                >
-                  <Wallet className="w-4 h-4 text-emerald-500" />
-                  <span>Sign In with MetaMask (SIWE)</span>
-                </button>
 
                 <div className="pt-2 text-center">
                   <button
@@ -738,6 +707,35 @@ export default function LoginPage() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Platform Administrator Gateway Card */}
+        <div className="glass-panel rounded-3xl p-6 sm:p-7 border border-purple-500/30 bg-gradient-to-r from-purple-950/40 via-slate-900/70 to-indigo-950/40 backdrop-blur-xl flex flex-col sm:flex-row items-center justify-between gap-5 shadow-2xl transition-all hover:border-purple-500/50">
+          <div className="flex items-center gap-4 text-center sm:text-left">
+            <div className="w-12 h-12 rounded-2xl bg-purple-500/15 border border-purple-500/30 text-purple-400 flex items-center justify-center shrink-0">
+              <Shield className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-purple-500/15 text-purple-300 text-[10px] font-bold uppercase tracking-wider mb-1 border border-purple-500/30">
+                <Lock className="w-3 h-3" />
+                Root Administration
+              </div>
+              <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
+                Platform Administrator Gateway
+              </h3>
+              <p className="text-xs text-slate-600 dark:text-slate-400 max-w-xl leading-relaxed">
+                Platform Administrators can connect their authorized MetaMask wallet to review institutional applications, accredit educational institutions, and audit on-chain transactions.
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/admin-login"
+            className="shrink-0 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold px-5 py-3 rounded-xl text-xs sm:text-sm transition-all shadow-lg shadow-purple-600/30 flex items-center gap-2 hover:scale-[1.02] active:scale-[0.98]"
+          >
+            <Wallet className="w-4 h-4" />
+            <span>Connect Admin Wallet</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
         </div>
       </div>
 

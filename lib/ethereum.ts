@@ -212,7 +212,7 @@ export async function getContractWithSigner(): Promise<Contract> {
 export function getContractReadOnly(): Contract {
   const primaryRpc =
     SUPPORTED_CHAIN_ID === 11155111
-      ? (process.env.NEXT_PUBLIC_RPC_URL || SUPPORTED_NETWORKS.SEPOLIA.rpcUrl)
+      ? (process.env.NEXT_PUBLIC_RPC_URL || "https://gateway.tenderly.co/public/sepolia")
       : SUPPORTED_NETWORKS.LOCAL.rpcUrl;
 
   try {
@@ -244,13 +244,23 @@ export async function detectUserRole(
   address: string
 ): Promise<{ role: UserRole; entityId?: number }> {
   try {
-    const contract = getContractReadOnly();
+    const cleanAddr = address.trim().toLowerCase();
+    const configuredAdmin = (process.env.NEXT_PUBLIC_ADMIN_WALLET || "").trim().toLowerCase();
+    const hardcodedAdmin = "0x4f1a429909a9024533ab1801517e152ac6cc3a14";
 
-    // 1. Check if Admin
-    const adminAddress = await contract.admin();
-    if (adminAddress.toLowerCase() === address.toLowerCase()) {
+    if (cleanAddr === hardcodedAdmin || (configuredAdmin && cleanAddr === configuredAdmin)) {
       return { role: "admin" };
     }
+
+    const contract = getContractReadOnly();
+
+    // 1. Check if Admin on-chain
+    try {
+      const adminAddress = await contract.admin();
+      if (adminAddress.toLowerCase() === cleanAddr) {
+        return { role: "admin" };
+      }
+    } catch {}
 
     // 2. Check if Registered University
     const uIdBigInt = await contract.universityAddressToId(address);

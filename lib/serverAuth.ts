@@ -46,7 +46,18 @@ export const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 export const WINDOW_DURATION_MS = 15 * 60 * 1000;
 
 // ----------------------------------------------------
-// 1. Distributed Rate Limiting & Account Lockout Engine (Prisma)
+// In-Memory Fallback Stores (Ensure resilience if Neon DB is sleeping or unreachable)
+// ----------------------------------------------------
+interface MemoryRateLimit {
+  count: number;
+  firstAttemptAt: Date;
+  lockedUntil: Date | null;
+}
+const memoryRateLimits = new Map<string, MemoryRateLimit>();
+const memoryNonces = new Map<string, { nonce: string; expiresAt: Date; used: boolean }>();
+
+// ----------------------------------------------------
+// 1. Distributed Rate Limiting & Account Lockout Engine (Prisma + Memory Fallback)
 // ----------------------------------------------------
 export async function checkRateLimit(key: string): Promise<{
   allowed: boolean;
@@ -54,34 +65,56 @@ export async function checkRateLimit(key: string): Promise<{
   lockoutRemainingSeconds?: number;
 }> {
   const now = new Date();
-  const record = await prisma.rateLimitCounter.findUnique({
-    where: { key },
-  });
 
-  if (!record) {
-    return { allowed: true, remainingAttempts: MAX_FAILED_ATTEMPTS };
+  try {
+    const record = await prisma.rateLimitCounter.findUnique({
+      where: { key },
+    });
+
+    if (record) {
+      if (record.lockedUntil && record.lockedUntil > now) {
+        const remainingSeconds = Math.ceil((record.lockedUntil.getTime() - now.getTime()) / 1000);
+        return {
+          allowed: false,
+          remainingAttempts: 0,
+          lockoutRemainingSeconds: remainingSeconds,
+        };
+      }
+
+      if (now.getTime() - record.firstAttemptAt.getTime() > WINDOW_DURATION_MS) {
+        await prisma.rateLimitCounter.delete({ where: { key } }).catch(() => {});
+        return { allowed: true, remainingAttempts: MAX_FAILED_ATTEMPTS };
+      }
+
+      return {
+        allowed: record.count < MAX_FAILED_ATTEMPTS,
+        remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - record.count),
+      };
+    }
+  } catch {
+    // Database unreachable -> fallback to in-memory rate limiting
+    const mem = memoryRateLimits.get(key);
+    if (mem) {
+      if (mem.lockedUntil && mem.lockedUntil > now) {
+        const remainingSeconds = Math.ceil((mem.lockedUntil.getTime() - now.getTime()) / 1000);
+        return {
+          allowed: false,
+          remainingAttempts: 0,
+          lockoutRemainingSeconds: remainingSeconds,
+        };
+      }
+      if (now.getTime() - mem.firstAttemptAt.getTime() > WINDOW_DURATION_MS) {
+        memoryRateLimits.delete(key);
+        return { allowed: true, remainingAttempts: MAX_FAILED_ATTEMPTS };
+      }
+      return {
+        allowed: mem.count < MAX_FAILED_ATTEMPTS,
+        remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - mem.count),
+      };
+    }
   }
 
-  // Active lockout check
-  if (record.lockedUntil && record.lockedUntil > now) {
-    const remainingSeconds = Math.ceil((record.lockedUntil.getTime() - now.getTime()) / 1000);
-    return {
-      allowed: false,
-      remainingAttempts: 0,
-      lockoutRemainingSeconds: remainingSeconds,
-    };
-  }
-
-  // Window expired -> reset
-  if (now.getTime() - record.firstAttemptAt.getTime() > WINDOW_DURATION_MS) {
-    await prisma.rateLimitCounter.delete({ where: { key } }).catch(() => {});
-    return { allowed: true, remainingAttempts: MAX_FAILED_ATTEMPTS };
-  }
-
-  return {
-    allowed: record.count < MAX_FAILED_ATTEMPTS,
-    remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - record.count),
-  };
+  return { allowed: true, remainingAttempts: MAX_FAILED_ATTEMPTS };
 }
 
 export async function recordFailedAttempt(key: string): Promise<{
@@ -90,76 +123,105 @@ export async function recordFailedAttempt(key: string): Promise<{
   lockoutRemainingSeconds?: number;
 }> {
   const now = new Date();
-  let record = await prisma.rateLimitCounter.findUnique({
-    where: { key },
-  });
 
-  if (!record || now.getTime() - record.firstAttemptAt.getTime() > WINDOW_DURATION_MS) {
-    record = await prisma.rateLimitCounter.upsert({
-      where: { key },
-      update: {
-        count: 1,
-        firstAttemptAt: now,
-        lockedUntil: null,
-      },
-      create: {
-        key,
-        count: 1,
-        firstAttemptAt: now,
-        lockedUntil: null,
-      },
-    });
-  } else {
-    record = await prisma.rateLimitCounter.update({
-      where: { key },
-      data: { count: { increment: 1 } },
-    });
-  }
+  try {
+    let record = await prisma.rateLimitCounter.findUnique({ where: { key } });
 
-  if (record.count >= MAX_FAILED_ATTEMPTS) {
-    const lockedUntil = new Date(now.getTime() + LOCKOUT_DURATION_MS);
-    await prisma.rateLimitCounter.update({
-      where: { key },
-      data: { lockedUntil },
-    });
+    if (!record || now.getTime() - record.firstAttemptAt.getTime() > WINDOW_DURATION_MS) {
+      record = await prisma.rateLimitCounter.upsert({
+        where: { key },
+        update: { count: 1, firstAttemptAt: now, lockedUntil: null },
+        create: { key, count: 1, firstAttemptAt: now, lockedUntil: null },
+      });
+    } else {
+      record = await prisma.rateLimitCounter.update({
+        where: { key },
+        data: { count: { increment: 1 } },
+      });
+    }
+
+    if (record.count >= MAX_FAILED_ATTEMPTS) {
+      const lockedUntil = new Date(now.getTime() + LOCKOUT_DURATION_MS);
+      await prisma.rateLimitCounter.update({
+        where: { key },
+        data: { lockedUntil },
+      });
+      return {
+        locked: true,
+        remainingAttempts: 0,
+        lockoutRemainingSeconds: Math.ceil(LOCKOUT_DURATION_MS / 1000),
+      };
+    }
+
     return {
-      locked: true,
-      remainingAttempts: 0,
-      lockoutRemainingSeconds: Math.ceil(LOCKOUT_DURATION_MS / 1000),
+      locked: false,
+      remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - record.count),
+    };
+  } catch {
+    // In-memory fallback
+    let mem = memoryRateLimits.get(key);
+    if (!mem || now.getTime() - mem.firstAttemptAt.getTime() > WINDOW_DURATION_MS) {
+      mem = { count: 1, firstAttemptAt: now, lockedUntil: null };
+      memoryRateLimits.set(key, mem);
+    } else {
+      mem.count += 1;
+    }
+
+    if (mem.count >= MAX_FAILED_ATTEMPTS) {
+      mem.lockedUntil = new Date(now.getTime() + LOCKOUT_DURATION_MS);
+      return {
+        locked: true,
+        remainingAttempts: 0,
+        lockoutRemainingSeconds: Math.ceil(LOCKOUT_DURATION_MS / 1000),
+      };
+    }
+
+    return {
+      locked: false,
+      remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - mem.count),
     };
   }
-
-  return {
-    locked: false,
-    remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - record.count),
-  };
 }
 
 export async function resetFailedAttempts(key: string): Promise<void> {
-  await prisma.rateLimitCounter.deleteMany({ where: { key } }).catch(() => {});
+  memoryRateLimits.delete(key);
+  try {
+    await prisma.rateLimitCounter.deleteMany({ where: { key } });
+  } catch {}
 }
 
 // ----------------------------------------------------
-// 2. SIWE-Style Nonce & Signature Verification (Prisma)
+// 2. SIWE-Style Nonce & Signature Verification (Prisma + Memory Fallback)
 // ----------------------------------------------------
+export function buildSIWEMessage(wallet: string, nonce: string): string {
+  return `VeriChain Platform Authentication\n\nPlease sign this message to authenticate your wallet with VeriChain.\n\nWallet: ${wallet}\nNonce: ${nonce}\nIssued At: ${new Date().toISOString()}`;
+}
+
 export async function generateAuthNonce(wallet: string): Promise<string> {
   const cleanWallet = wallet.trim().toLowerCase();
   const nonce = `verichain_${ethers.hexlify(ethers.randomBytes(16)).slice(2)}`;
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 min TTL
 
-  // Delete expired nonces for this wallet
-  await prisma.authNonce.deleteMany({
-    where: { wallet: cleanWallet },
-  }).catch(() => {});
+  // Always keep in memory store
+  memoryNonces.set(cleanWallet, { nonce, expiresAt, used: false });
 
-  await prisma.authNonce.create({
-    data: {
-      wallet: cleanWallet,
-      nonce,
-      expiresAt,
-      used: false,
-    },
-  });
+  // Also persist to Prisma if database is connected
+  try {
+    await prisma.authNonce.deleteMany({
+      where: { wallet: cleanWallet },
+    }).catch(() => {});
+
+    await prisma.authNonce.create({
+      data: {
+        wallet: cleanWallet,
+        nonce,
+        expiresAt,
+        used: false,
+      },
+    });
+  } catch {
+    // Graceful continuation using memory store
+  }
 
   return nonce;
 }
@@ -171,20 +233,36 @@ export async function verifyWalletSignature(
 ): Promise<boolean> {
   try {
     const cleanWallet = wallet.trim().toLowerCase();
-    const nonceRecord = await prisma.authNonce.findFirst({
-      where: {
-        wallet: cleanWallet,
-        used: false,
-        expiresAt: { gt: new Date() },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    let nonceValue: string | null = null;
 
-    if (!nonceRecord) {
+    // Check memory store first
+    const memNonce = memoryNonces.get(cleanWallet);
+    if (memNonce && !memNonce.used && memNonce.expiresAt > new Date()) {
+      nonceValue = memNonce.nonce;
+    }
+
+    // Also check Prisma
+    if (!nonceValue) {
+      try {
+        const nonceRecord = await prisma.authNonce.findFirst({
+          where: {
+            wallet: cleanWallet,
+            used: false,
+            expiresAt: { gt: new Date() },
+          },
+          orderBy: { createdAt: "desc" },
+        });
+        if (nonceRecord) {
+          nonceValue = nonceRecord.nonce;
+        }
+      } catch {}
+    }
+
+    if (!nonceValue) {
       return false;
     }
 
-    if (!message.includes(nonceRecord.nonce)) {
+    if (!message.includes(nonceValue)) {
       return false;
     }
 
@@ -193,10 +271,15 @@ export async function verifyWalletSignature(
 
     if (isValid) {
       // Mark as used immediately to eliminate replay attacks
-      await prisma.authNonce.update({
-        where: { id: nonceRecord.id },
-        data: { used: true },
-      }).catch(() => {});
+      if (memNonce) {
+        memNonce.used = true;
+      }
+      try {
+        await prisma.authNonce.updateMany({
+          where: { wallet: cleanWallet, nonce: nonceValue },
+          data: { used: true },
+        });
+      } catch {}
     }
 
     return isValid;

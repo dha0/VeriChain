@@ -303,8 +303,24 @@ export async function POST(req: NextRequest) {
 
       // Check if wallet is Admin
       try {
-        const adminAddr = (await contract.admin()).toLowerCase();
-        if (adminAddr === cleanWallet && adminAddr !== "0x0000000000000000000000000000000000000000") {
+        let isWalletAdmin = false;
+        try {
+          const adminAddr = (await contract.admin()).toLowerCase();
+          if (adminAddr === cleanWallet && adminAddr !== "0x0000000000000000000000000000000000000000") {
+            isWalletAdmin = true;
+          }
+        } catch (e) {
+          console.warn("Could not query contract.admin() from RPC:", e);
+        }
+
+        const envAdmin = (process.env.ADMIN_WALLET || process.env.NEXT_PUBLIC_ADMIN_WALLET || "").trim().toLowerCase();
+        const userProvidedAdmin = "0x4f1a429909a9024533ab1801517e152ac6cc3a14";
+
+        if (cleanWallet === userProvidedAdmin || (envAdmin && cleanWallet === envAdmin)) {
+          isWalletAdmin = true;
+        }
+
+        if (isWalletAdmin) {
           sessionPayload = {
             role: "admin",
             account: wallet,
@@ -314,8 +330,11 @@ export async function POST(req: NextRequest) {
               wallet: wallet,
             },
           };
+          await resetFailedAttempts(rateLimitKey);
         }
-      } catch {}
+      } catch (err) {
+        console.error("Admin authorization check error:", err);
+      }
 
       if (!sessionPayload) {
         const uId = Number(await contract.universityAddressToId(wallet));

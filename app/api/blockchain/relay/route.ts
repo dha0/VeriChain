@@ -62,7 +62,13 @@ async function authorizeRelayCall(req: NextRequest, action: string) {
     }
   }
 
-  if (action === "approveAccessRequest") {
+  if (
+    action === "approveAccessRequest" ||
+    action === "registerUniversity" ||
+    action === "registerCompany" ||
+    action === "toggleUniversityStatus" ||
+    action === "toggleCompanyStatus"
+  ) {
     if (session.role !== "admin") {
       return { authorized: false, error: "Forbidden: Root Platform Administrator privileges required." };
     }
@@ -374,6 +380,71 @@ export async function POST(req: NextRequest) {
         success: true,
         txHash: receipt.hash,
       });
+    }
+
+    // -------------------------------------------------------------------------
+    // 4b. DIRECT ON-CHAIN REGISTRATION & STATUS (ADMIN ONLY)
+    // -------------------------------------------------------------------------
+    if (action === "registerUniversity") {
+      const { name, universityCode, wallet, affiliatingUniversity } = data || {};
+      if (!name || !universityCode) {
+        return NextResponse.json({ error: "Name and universityCode required" }, { status: 400 });
+      }
+      const { contract } = getServerContract("admin");
+      const targetWallet = wallet && ethers.isAddress(wallet) ? wallet : ethers.Wallet.createRandom().address;
+      let tx;
+      try {
+        tx = await contract["registerUniversity(string,string,string,address)"](
+          name.trim(),
+          universityCode.trim().toUpperCase(),
+          affiliatingUniversity || "VTU",
+          targetWallet
+        );
+      } catch {
+        tx = await contract["registerUniversity(string,string,address)"](
+          name.trim(),
+          universityCode.trim().toUpperCase(),
+          targetWallet
+        );
+      }
+      const receipt = await tx.wait();
+      return NextResponse.json({ success: true, txHash: receipt.hash, wallet: targetWallet });
+    }
+
+    if (action === "registerCompany") {
+      const { name, companyCode, wallet } = data || {};
+      if (!name || !companyCode) {
+        return NextResponse.json({ error: "Name and companyCode required" }, { status: 400 });
+      }
+      const { contract } = getServerContract("admin");
+      const targetWallet = wallet && ethers.isAddress(wallet) ? wallet : ethers.Wallet.createRandom().address;
+      const tx = await contract.registerCompany(
+        name.trim(),
+        companyCode.trim().toUpperCase(),
+        targetWallet
+      );
+      const receipt = await tx.wait();
+      return NextResponse.json({ success: true, txHash: receipt.hash, wallet: targetWallet });
+    }
+
+    if (action === "toggleUniversityStatus") {
+      const { id, currentActive } = data || {};
+      const { contract } = getServerContract("admin");
+      const tx = currentActive
+        ? await contract.deactivateUniversity(Number(id))
+        : await contract.activateUniversity(Number(id));
+      const receipt = await tx.wait();
+      return NextResponse.json({ success: true, txHash: receipt.hash });
+    }
+
+    if (action === "toggleCompanyStatus") {
+      const { id, currentActive } = data || {};
+      const { contract } = getServerContract("admin");
+      const tx = currentActive
+        ? await contract.deactivateCompany(Number(id))
+        : await contract.activateCompany(Number(id));
+      const receipt = await tx.wait();
+      return NextResponse.json({ success: true, txHash: receipt.hash });
     }
 
     // -------------------------------------------------------------------------

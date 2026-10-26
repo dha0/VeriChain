@@ -91,7 +91,7 @@ export default function AdminLoginPage() {
           </div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">System Admin Gateway</h1>
           <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-            This gateway is restricted to the platform smart contract owner. Connect the deployer MetaMask wallet to proceed to root administration.
+            This gateway is restricted to the platform administrators. Connect your authorized administrator MetaMask wallet to proceed to root administration.
           </p>
         </div>
 
@@ -141,10 +141,10 @@ export default function AdminLoginPage() {
               className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold py-3 px-4 rounded-xl text-xs sm:text-sm transition-all shadow-lg shadow-purple-600/25 flex items-center justify-center gap-2"
             >
               <Wallet className="w-4 h-4" />
-              <span>{isConnecting ? "Verifying On-Chain Ownership..." : "Connect Admin Wallet"}</span>
+              <span>{isConnecting ? "Verifying Administrator Signature..." : "Connect Admin Wallet"}</span>
             </button>
             <p className="text-[11px] text-slate-500">
-              Only the contract deployer address can unlock this console.
+              Authorized admin wallet (e.g. 0x4F1A...3A14 or contract owner) required.
             </p>
           </div>
         )}

@@ -1,6 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateAuthNonce } from "@/lib/serverAuth";
+import { generateAuthNonce, buildSIWEMessage } from "@/lib/serverAuth";
 import { ethers } from "ethers";
+
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const wallet = searchParams.get("wallet");
+
+    if (!wallet || !ethers.isAddress(wallet)) {
+      return NextResponse.json({ error: "Valid Ethereum wallet address required" }, { status: 400 });
+    }
+
+    const nonce = await generateAuthNonce(wallet);
+    const message = buildSIWEMessage(wallet, nonce);
+    return NextResponse.json({ nonce, message });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message || "Failed to generate nonce" }, { status: 500 });
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,9 +28,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Valid Ethereum wallet address required" }, { status: 400 });
     }
 
-    const nonce = generateAuthNonce(wallet);
-    return NextResponse.json({ nonce });
+    const nonce = await generateAuthNonce(wallet);
+    const message = buildSIWEMessage(wallet, nonce);
+    return NextResponse.json({ nonce, message });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || "Failed to generate nonce" }, { status: 500 });
   }
 }
+
