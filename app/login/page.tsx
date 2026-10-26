@@ -65,6 +65,7 @@ export default function LoginPage() {
   // Student Form State
   const [studentInput, setStudentInput] = useState("");
   const [studentOtp, setStudentOtp] = useState("");
+  const [receivedOtp, setReceivedOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
   const [otpNotice, setOtpNotice] = useState("");
   const [isSendingOtp, setIsSendingOtp] = useState(false);
@@ -148,7 +149,11 @@ export default function LoginPage() {
     try {
       const res = await requestStudentOTP(studentInput);
       setOtpSent(true);
-      setOtpNotice(res.message || "Security OTP dispatched to student email.");
+      const generated = res.displayOTP || res.otp || res.devOTP || "";
+      if (generated) {
+        setReceivedOtp(generated);
+      }
+      setOtpNotice(res.message || "Security OTP generated.");
     } catch (err: any) {
       setErrorMessage(err.message || parseBlockchainError(err));
     } finally {
@@ -621,6 +626,26 @@ export default function LoginPage() {
                   {otpNotice && (
                     <div className="p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-600 dark:text-purple-300 text-xs">
                       {otpNotice}
+                    </div>
+                  )}
+
+                  {receivedOtp && (
+                    <div className="p-3 rounded-xl bg-purple-500/15 border border-purple-500/40 text-purple-700 dark:text-purple-200 text-xs flex items-center justify-between shadow-sm">
+                      <div>
+                        <div className="text-[10px] text-purple-600 dark:text-purple-400 font-semibold uppercase tracking-wider">
+                          One-Time Passkey (OTP)
+                        </div>
+                        <div className="text-lg font-mono font-bold tracking-widest text-purple-800 dark:text-purple-200">
+                          {receivedOtp}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setStudentOtp(receivedOtp)}
+                        className="px-3 py-1.5 text-[11px] font-bold bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-all shadow"
+                      >
+                        Auto-fill
+                      </button>
                     </div>
                   )}
 

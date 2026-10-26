@@ -28,7 +28,7 @@ interface AuthContextType {
   loginUniversityWithCode: (code: string, accessCode?: string) => Promise<void>;
   loginCompanyWithCode: (code: string, accessCode?: string) => Promise<void>;
   loginWithUSN: (usn: string, otp?: string) => Promise<void>;
-  requestStudentOTP: (usn: string) => Promise<{ success: boolean; message: string; devOTP?: string }>;
+  requestStudentOTP: (usn: string) => Promise<{ success: boolean; message: string; devOTP?: string; displayOTP?: string; otp?: string }>;
   loginStudentWithOTP: (usn: string, otp: string) => Promise<void>;
   loginStudentWithWallet: (usn: string) => Promise<void>;
   loginAdminWithWallet: () => Promise<void>;

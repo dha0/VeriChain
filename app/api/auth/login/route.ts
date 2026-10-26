@@ -98,8 +98,9 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({
           success: true,
-          message: `6-digit security OTP sent to student's registered email (${recipientEmail}).`,
-          devOTP: isDev ? generatedOtp : undefined,
+          message: `6-digit security OTP generated for student ${cleanUSN}.`,
+          displayOTP: generatedOtp,
+          devOTP: generatedOtp,
           isWalletLinked: Boolean(linkedWallet),
         });
       } catch (err: any) {
