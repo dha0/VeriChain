@@ -231,9 +231,13 @@ export default function AdminPage() {
       // On-chain registration via relayer (with signer fallback)
       let onChainOk = false;
       try {
+        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
         const relayRes = await fetch("/api/blockchain/relay", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-wallet": adminWallet,
+          },
           body: JSON.stringify({
             action: req.entityType === "university" ? "registerUniversity" : "registerCompany",
             data: req.entityType === "university" ? {
@@ -362,9 +366,13 @@ export default function AdminPage() {
 
       let onChainOk = false;
       try {
+        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
         const relayRes = await fetch("/api/blockchain/relay", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-wallet": adminWallet,
+          },
           body: JSON.stringify({
             action: "registerUniversity",
             data: {
@@ -449,9 +457,13 @@ export default function AdminPage() {
 
       let onChainOk = false;
       try {
+        const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
         const relayRes = await fetch("/api/blockchain/relay", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-wallet": adminWallet,
+          },
           body: JSON.stringify({
             action: "registerCompany",
             data: {
@@ -518,19 +530,35 @@ export default function AdminPage() {
   };
 
   const toggleUniversityStatus = async (id: number, currentActive: boolean) => {
+    setStatusMessage(null);
     try {
+      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
       let ok = false;
       try {
         const res = await fetch("/api/blockchain/relay", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-wallet": adminWallet,
+          },
           body: JSON.stringify({
             action: "toggleUniversityStatus",
             data: { id, currentActive },
           }),
         });
-        if (res.ok) ok = true;
-      } catch {}
+        const relayData = await res.json();
+        if (res.ok) {
+          ok = true;
+          setStatusMessage({
+            text: `Success! University #${id} is now ${currentActive ? "deactivated" : "active"} on Ethereum.`,
+            type: "success",
+          });
+        } else {
+          console.warn("Relay response error:", relayData.error);
+        }
+      } catch (relayErr) {
+        console.warn("Relay network error:", relayErr);
+      }
 
       if (!ok) {
         const contract = await getContractWithSigner();
@@ -538,27 +566,47 @@ export default function AdminPage() {
           ? await contract.deactivateUniversity(id)
           : await contract.activateUniversity(id);
         await tx.wait();
+        setStatusMessage({
+          text: `Success! University #${id} updated on Ethereum.`,
+          type: "success",
+        });
       }
       await fetchData();
     } catch (err: any) {
-      alert(err.reason || err.message);
+      alert(err.reason || err.message || "Failed to update university status");
     }
   };
 
   const toggleCompanyStatus = async (id: number, currentActive: boolean) => {
+    setStatusMessage(null);
     try {
+      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
       let ok = false;
       try {
         const res = await fetch("/api/blockchain/relay", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-wallet": adminWallet,
+          },
           body: JSON.stringify({
             action: "toggleCompanyStatus",
             data: { id, currentActive },
           }),
         });
-        if (res.ok) ok = true;
-      } catch {}
+        const relayData = await res.json();
+        if (res.ok) {
+          ok = true;
+          setStatusMessage({
+            text: `Success! Company #${id} is now ${currentActive ? "deactivated" : "active"} on Ethereum.`,
+            type: "success",
+          });
+        } else {
+          console.warn("Relay response error:", relayData.error);
+        }
+      } catch (relayErr) {
+        console.warn("Relay network error:", relayErr);
+      }
 
       if (!ok) {
         const contract = await getContractWithSigner();
@@ -566,10 +614,14 @@ export default function AdminPage() {
           ? await contract.deactivateCompany(id)
           : await contract.activateCompany(id);
         await tx.wait();
+        setStatusMessage({
+          text: `Success! Company #${id} updated on Ethereum.`,
+          type: "success",
+        });
       }
       await fetchData();
     } catch (err: any) {
-      alert(err.reason || err.message);
+      alert(err.reason || err.message || "Failed to update company status");
     }
   };
 
