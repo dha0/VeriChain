@@ -1,6 +1,6 @@
 import React from "react";
 import Link from "next/link";
-import { Shield, Lock } from "lucide-react";
+import { Shield } from "lucide-react";
 
 export const Footer: React.FC = () => {
   return (
@@ -57,14 +57,6 @@ export const Footer: React.FC = () => {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
               EVM Smart Contract Ready
             </span>
-            {/* Secret Admin Entry Point - discreet lock */}
-            <Link
-              href="/admin-login"
-              title="System Administration"
-              className="p-1 text-slate-400 hover:text-purple-600 dark:hover:text-purple-400 transition-colors opacity-40 hover:opacity-100"
-            >
-              <Lock className="w-3.5 h-3.5" />
-            </Link>
           </div>
         </div>
       </div>
