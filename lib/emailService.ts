@@ -1,6 +1,6 @@
 /**
- * Email Delivery Abstraction for VeriChain OTP & Security Alerts.
- * Supports Resend API, custom webhooks/SMTP, with development console simulation.
+ * Email Delivery Service for VeriChain OTP & Security Alerts.
+ * Supports Resend API, Brevo (Sendinblue) API, with development console simulation.
  */
 
 export interface SendEmailOptions {
@@ -8,6 +8,14 @@ export interface SendEmailOptions {
   usn: string;
   studentName?: string;
   otp: string;
+}
+
+export interface SendApprovalEmailOptions {
+  to: string;
+  entityType: "university" | "company";
+  name: string;
+  code: string;
+  secretAccessCode: string;
 }
 
 function escapeHtml(str: string): string {
@@ -19,17 +27,113 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#039;");
 }
 
-export async function sendStudentOTPEmail({
-  to,
-  usn,
-  studentName,
-  otp,
-}: SendEmailOptions): Promise<{ success: boolean; messageId?: string }> {
+/**
+ * Universal email dispatcher: Automatically selects Brevo or Resend based on API key prefix.
+ */
+async function dispatchEmail(
+  to: string,
+  subject: string,
+  htmlContent: string
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
   const isDevelopment =
     process.env.NODE_ENV === "development" ||
     process.env.NODE_ENV === "test" ||
     !process.env.NODE_ENV;
 
+  const apiKey = (process.env.RESEND_API_KEY || process.env.BREVO_API_KEY || "").trim();
+  const rawSender = process.env.EMAIL_FROM || "VeriChain Auth <dhanyajagadeesh2005@gmail.com>";
+
+  if (!apiKey) {
+    console.log(`[EMAIL DEV SIMULATION] To: ${to} | Subject: ${subject}`);
+    return { success: true, messageId: `dev-sim-${Date.now()}` };
+  }
+
+  // 1. Brevo (Sendinblue) if API key begins with xkeysib- or keysib-
+  if (apiKey.startsWith("xkeysib-") || apiKey.startsWith("keysib-")) {
+    try {
+      let senderEmail = "dhanyajagadeesh2005@gmail.com";
+      let senderName = "VeriChain";
+      const match = rawSender.match(/^(.*?)\s*<(.+)>$/);
+      if (match) {
+        senderName = match[1].trim() || "VeriChain";
+        senderEmail = match[2].trim();
+      } else if (rawSender.includes("@")) {
+        senderEmail = rawSender.trim();
+      }
+
+      const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": apiKey,
+          "Content-Type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({
+          sender: { name: senderName, email: senderEmail },
+          to: [{ email: to.trim() }],
+          subject,
+          htmlContent,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.warn(`[Brevo Email Dispatch Failed ${res.status}]: ${errText}`);
+        return { success: false, error: `Brevo error (${res.status}): ${errText}` };
+      }
+
+      const data = await res.json();
+      return { success: true, messageId: data.messageId || "brevo-ok" };
+    } catch (err: any) {
+      console.warn("[Brevo Network Error]:", err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  // 2. Resend API
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: rawSender,
+        to: [to.trim()],
+        subject,
+        html: htmlContent,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn(`[Resend Email Delivery Failed ${res.status}]: ${errText}`);
+      if (!isDevelopment) {
+        return { success: false, error: `Resend error (${res.status}): ${errText}` };
+      }
+    } else {
+      const data = await res.json();
+      return { success: true, messageId: data.id };
+    }
+  } catch (err: any) {
+    console.warn("[Resend Email Error]:", err);
+    if (!isDevelopment) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  // Fallback to simulation if provider errored in development
+  console.log(`[EMAIL FALLBACK SIMULATION] To: ${to} | Subject: ${subject}`);
+  return { success: true, messageId: `fallback-sim-${Date.now()}` };
+}
+
+export async function sendStudentOTPEmail({
+  to,
+  usn,
+  studentName,
+  otp,
+}: SendEmailOptions): Promise<{ success: boolean; messageId?: string; error?: string }> {
   const safeName = escapeHtml(studentName || "Student");
   const safeUsn = escapeHtml(usn);
 
@@ -58,57 +162,7 @@ export async function sendStudentOTPEmail({
     </div>
   `;
 
-  // 1. Production delivery via Resend API if configured
-  const resendApiKey = process.env.RESEND_API_KEY?.trim();
-  if (resendApiKey) {
-    try {
-      const res = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${resendApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: process.env.EMAIL_FROM || "VeriChain Auth <auth@verichain.network>",
-          to: [to],
-          subject,
-          html: htmlContent,
-        }),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Resend email delivery failed: ${errText}`);
-      }
-
-      const data = await res.json();
-      return { success: true, messageId: data.id };
-    } catch (err) {
-      if (!isDevelopment) throw err;
-      console.warn("Resend dispatch error, falling back to dev mode:", err);
-    }
-  }
-
-  // 2. In Development or Test mode: console log simulation
-  if (isDevelopment) {
-    console.log(
-      `[DEV EMAIL SIMULATION] To: ${to} | USN: ${usn} | One-Time Password: ${otp}`
-    );
-    return { success: true, messageId: `dev-sim-${Date.now()}` };
-  }
-
-  // 3. In Production without configured email provider: fail explicitly
-  throw new Error(
-    "Email Delivery Configuration Error: In production, RESEND_API_KEY environment variable is required to deliver security OTP emails."
-  );
-}
-
-export interface SendApprovalEmailOptions {
-  to: string;
-  entityType: "university" | "company";
-  name: string;
-  code: string;
-  secretAccessCode: string;
+  return await dispatchEmail(to, subject, htmlContent);
 }
 
 export async function sendApprovalEmail({
@@ -117,12 +171,7 @@ export async function sendApprovalEmail({
   name,
   code,
   secretAccessCode,
-}: SendApprovalEmailOptions): Promise<{ success: boolean; messageId?: string }> {
-  const isDevelopment =
-    process.env.NODE_ENV === "development" ||
-    process.env.NODE_ENV === "test" ||
-    !process.env.NODE_ENV;
-
+}: SendApprovalEmailOptions): Promise<{ success: boolean; messageId?: string; error?: string }> {
   const safeName = escapeHtml(name);
   const safeCode = escapeHtml(code);
   const entityLabel = entityType === "university" ? "Accredited University / College" : "Corporate Hiring Partner";
@@ -172,38 +221,5 @@ export async function sendApprovalEmail({
     </div>
   `;
 
-  const resendApiKey = process.env.RESEND_API_KEY?.trim();
-  if (resendApiKey) {
-    try {
-      const res = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${resendApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: process.env.EMAIL_FROM || "VeriChain Auth <auth@verichain.network>",
-          to: [to],
-          subject,
-          html: htmlContent,
-        }),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        console.warn(`Resend email delivery failed: ${errText}`);
-      } else {
-        const data = await res.json();
-        return { success: true, messageId: data.id };
-      }
-    } catch (err) {
-      console.warn("Resend email dispatch error:", err);
-    }
-  }
-
-  // Development simulation or fallback
-  console.log(
-    `[APPROVAL EMAIL SIMULATION] To: ${to} | Entity: ${name} (${code}) | Passkey: ${secretAccessCode}`
-  );
-  return { success: true, messageId: `dev-sim-${Date.now()}` };
+  return await dispatchEmail(to, subject, htmlContent);
 }

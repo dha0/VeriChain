@@ -203,6 +203,44 @@ export default function AdminPage() {
         if (reqData.requests) {
           setAccessRequests(reqData.requests);
         }
+        if (reqData.dbInstitutions) {
+          const dbUnis = reqData.dbInstitutions.filter((i: any) => i.entityType === "university");
+          const dbComps = reqData.dbInstitutions.filter((i: any) => i.entityType === "company");
+
+          setUniversities((prev) => {
+            const list = [...prev];
+            for (const du of dbUnis) {
+              const code = (du.code || "").trim().toUpperCase();
+              if (!list.some((u) => (u.universityCode || "").trim().toUpperCase() === code)) {
+                list.push({
+                  id: du.id || list.length + 1,
+                  name: du.name,
+                  universityCode: du.code,
+                  wallet: du.wallet,
+                  active: true,
+                });
+              }
+            }
+            return list;
+          });
+
+          setCompanies((prev) => {
+            const list = [...prev];
+            for (const dc of dbComps) {
+              const code = (dc.code || "").trim().toUpperCase();
+              if (!list.some((c) => (c.companyCode || "").trim().toUpperCase() === code)) {
+                list.push({
+                  id: dc.id || list.length + 1,
+                  name: dc.name,
+                  companyCode: dc.code,
+                  wallet: dc.wallet,
+                  active: true,
+                });
+              }
+            }
+            return list;
+          });
+        }
       } catch (err) {
         console.error("Failed to load access requests", err);
       }

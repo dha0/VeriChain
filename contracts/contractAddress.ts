@@ -7,7 +7,7 @@ export const SUPPORTED_NETWORKS = {
     chainId: "0xaa36a7", // 11155111 in hex
     chainIdDecimal: 11155111,
     name: "Ethereum Sepolia Testnet",
-    rpcUrl: process.env.NEXT_PUBLIC_RPC_URL || "https://gateway.tenderly.co/public/sepolia",
+    rpcUrl: process.env.NEXT_PUBLIC_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com",
     explorerUrl: "https://sepolia.etherscan.io",
   },
   LOCAL: {

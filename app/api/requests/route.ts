@@ -86,14 +86,36 @@ export async function GET(req: NextRequest) {
     console.warn("Unable to fetch on-chain access requests directly:", err);
   }
 
+  // Check persistent credentials to know which institutions are already fully approved & registered
+  const dbInstitutions = await prisma.institutionCredential.findMany();
+  const registeredCodes = new Set(
+    dbInstitutions.map((i: any) => (i.codeIdentifier || "").trim().toUpperCase())
+  );
+
   const map = new Map<string, AccessRequest>();
   for (const r of onChainList) {
-    map.set(`code_${r.proposedCode.toUpperCase()}`, r);
+    const isReg = registeredCodes.has((r.proposedCode || "").trim().toUpperCase());
+    map.set(`code_${r.proposedCode.toUpperCase()}`, {
+      ...r,
+      approved: r.approved || isReg,
+    });
   }
 
   for (const r of dbRequests) {
-    const key = `code_${(r.proposedCode || "").toUpperCase()}`;
-    if (!map.has(key)) {
+    const cleanCode = (r.proposedCode || "").trim().toUpperCase();
+    const key = `code_${cleanCode}`;
+    const isReg = registeredCodes.has(cleanCode);
+    const isApproved = Boolean(r.approved || r.status === "approved" || isReg);
+    const existing = map.get(key);
+
+    if (existing) {
+      if (isApproved) {
+        existing.approved = true;
+      }
+      if (r.contactEmail && !existing.contactEmail) {
+        existing.contactEmail = r.contactEmail;
+      }
+    } else {
       map.set(key, {
         requestId: r.requestId,
         entityType: r.entityType as any,
@@ -101,14 +123,24 @@ export async function GET(req: NextRequest) {
         proposedCode: r.proposedCode,
         contactEmail: r.contactEmail,
         wallet: r.wallet,
-        approved: r.approved,
+        approved: isApproved,
         timestamp: r.createdAt.getTime(),
       });
     }
   }
 
   const merged = Array.from(map.values());
-  return NextResponse.json({ requests: merged });
+  return NextResponse.json({
+    requests: merged,
+    dbInstitutions: dbInstitutions.map((i: any) => ({
+      id: i.entityId,
+      name: i.name,
+      code: i.codeIdentifier,
+      entityType: i.entityType,
+      wallet: i.wallet,
+      active: true,
+    })),
+  });
 }
 
 export async function POST(req: NextRequest) {

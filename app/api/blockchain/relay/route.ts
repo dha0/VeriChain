@@ -405,27 +405,17 @@ export async function POST(req: NextRequest) {
     // 4b. DIRECT ON-CHAIN REGISTRATION & STATUS (ADMIN ONLY)
     // -------------------------------------------------------------------------
     if (action === "registerUniversity") {
-      const { name, universityCode, wallet, affiliatingUniversity } = data || {};
+      const { name, universityCode, wallet } = data || {};
       if (!name || !universityCode) {
         return NextResponse.json({ error: "Name and universityCode required" }, { status: 400 });
       }
       const { contract } = getServerContract("admin");
       const targetWallet = wallet && ethers.isAddress(wallet) ? wallet : ethers.Wallet.createRandom().address;
-      let tx;
-      try {
-        tx = await contract["registerUniversity(string,string,string,address)"](
-          name.trim(),
-          universityCode.trim().toUpperCase(),
-          affiliatingUniversity || "VTU",
-          targetWallet
-        );
-      } catch {
-        tx = await contract["registerUniversity(string,string,address)"](
-          name.trim(),
-          universityCode.trim().toUpperCase(),
-          targetWallet
-        );
-      }
+      const tx = await contract.registerUniversity(
+        name.trim(),
+        universityCode.trim().toUpperCase(),
+        targetWallet
+      );
       const receipt = await tx.wait();
       return NextResponse.json({ success: true, txHash: receipt.hash, wallet: targetWallet });
     }
