@@ -83,6 +83,80 @@ export default function AdminPage() {
   const [copiedSecret, setCopiedSecret] = useState(false);
   const [copiedFullDetails, setCopiedFullDetails] = useState(false);
 
+  // Pre-filter legacy test entities that cannot be logged into
+  const LEGACY_TEST_CODES = useMemo(
+    () => new Set(["TEST-UNI-001", "CIT", "CIT0107", "INFY-BLR-01", "TCS-MUM-01"]),
+    []
+  );
+
+  const [hiddenCodes, setHiddenCodes] = useState<string[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("verichain_hidden_entities");
+        return stored ? JSON.parse(stored) : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+
+  const visibleUniversities = useMemo(() => {
+    const hiddenSet = new Set([...hiddenCodes, ...Array.from(LEGACY_TEST_CODES)]);
+    return universities.filter(
+      (u) =>
+        Boolean(u.name && u.name.trim() !== "") &&
+        Boolean(u.universityCode && u.universityCode.trim() !== "") &&
+        !u.universityCode.startsWith("0x") &&
+        !hiddenSet.has((u.universityCode || "").trim().toUpperCase())
+    );
+  }, [universities, hiddenCodes, LEGACY_TEST_CODES]);
+
+  const visibleCompanies = useMemo(() => {
+    const hiddenSet = new Set([...hiddenCodes, ...Array.from(LEGACY_TEST_CODES)]);
+    return companies.filter(
+      (c) =>
+        Boolean(c.name && c.name.trim() !== "") &&
+        Boolean(c.companyCode && c.companyCode.trim() !== "") &&
+        !c.companyCode.startsWith("0x") &&
+        !hiddenSet.has((c.companyCode || "").trim().toUpperCase())
+    );
+  }, [companies, hiddenCodes, LEGACY_TEST_CODES]);
+
+  const handleDeleteEntity = async (entityType: "university" | "company", code: string) => {
+    const cleanCode = (code || "").trim().toUpperCase();
+    if (!confirm(`Are you sure you want to remove and hide ${cleanCode}?`)) return;
+
+    const nextHidden = Array.from(new Set([...hiddenCodes, cleanCode]));
+    setHiddenCodes(nextHidden);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("verichain_hidden_entities", JSON.stringify(nextHidden));
+    }
+
+    if (entityType === "university") {
+      setUniversities((prev) => prev.filter((u) => (u.universityCode || "").trim().toUpperCase() !== cleanCode));
+    } else {
+      setCompanies((prev) => prev.filter((c) => (c.companyCode || "").trim().toUpperCase() !== cleanCode));
+    }
+
+    try {
+      const adminWallet = currentAccount || authAccount || "0x4F1A429909A9024533AB1801517e152aC6CC3A14";
+      await fetch("/api/requests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-wallet": adminWallet,
+        },
+        body: JSON.stringify({ action: "delete_institution", codeIdentifier: cleanCode }),
+      });
+    } catch {}
+
+    setStatusMessage({
+      text: `${entityType === "university" ? "University" : "Company"} (${cleanCode}) removed successfully.`,
+      type: "info",
+    });
+  };
+
   useEffect(() => {
     fetchData();
   }, [role, authAccount]);
@@ -769,11 +843,11 @@ export default function AdminPage() {
         {/* Statistics Cards */}
         <div className="relative z-10 grid grid-cols-2 sm:grid-cols-5 gap-3">
           <div className="p-4 rounded-2xl text-center bg-indigo-800/50 dark:bg-slate-900/70 border border-indigo-600/40 dark:border-sky-500/20 shadow-sm backdrop-blur-md">
-            <div className="text-2xl font-bold font-mono text-sky-300 dark:text-sky-400">{counters.totalUniversities}</div>
+            <div className="text-2xl font-bold font-mono text-sky-300 dark:text-sky-400">{visibleUniversities.length}</div>
             <div className="text-[11px] text-indigo-200 dark:text-slate-400 font-medium">Total Universities</div>
           </div>
           <div className="p-4 rounded-2xl text-center bg-indigo-800/50 dark:bg-slate-900/70 border border-indigo-600/40 dark:border-emerald-500/20 shadow-sm backdrop-blur-md">
-            <div className="text-2xl font-bold font-mono text-emerald-300 dark:text-emerald-400">{counters.totalCompanies}</div>
+            <div className="text-2xl font-bold font-mono text-emerald-300 dark:text-emerald-400">{visibleCompanies.length}</div>
             <div className="text-[11px] text-indigo-200 dark:text-slate-400 font-medium">Total Companies</div>
           </div>
           <div className="p-4 rounded-2xl text-center bg-indigo-800/50 dark:bg-slate-900/70 border border-indigo-600/40 dark:border-indigo-500/20 shadow-sm backdrop-blur-md">
@@ -820,7 +894,7 @@ export default function AdminPage() {
             }`}
           >
             <Building2 className="w-4 h-4" />
-            <span>2. Accredited Universities ({universities.length})</span>
+            <span>2. Accredited Universities ({visibleUniversities.length})</span>
           </button>
 
           <button
@@ -833,7 +907,7 @@ export default function AdminPage() {
             }`}
           >
             <Briefcase className="w-4 h-4" />
-            <span>3. Hiring Partners ({companies.length})</span>
+            <span>3. Hiring Partners ({visibleCompanies.length})</span>
           </button>
 
           <button
@@ -1020,14 +1094,14 @@ export default function AdminPage() {
               <div className="flex justify-between items-center border-b border-indigo-700/30 dark:border-slate-800 pb-3">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Building2 className="w-4 h-4 text-sky-400" />
-                  <span>Accredited Universities ({universities.length})</span>
+                  <span>Accredited Universities ({visibleUniversities.length})</span>
                 </h3>
               </div>
               <div className="divide-y divide-indigo-700/30 max-h-80 overflow-y-auto">
-                {universities.length === 0 ? (
+                {visibleUniversities.length === 0 ? (
                   <div className="text-xs text-indigo-300/50 py-6 text-center">No universities registered yet.</div>
                 ) : (
-                  universities.map((u) => (
+                  visibleUniversities.map((u) => (
                     <div key={u.id} className="py-3 flex items-center justify-between gap-2 text-xs">
                       <div>
                         <div className="font-bold text-white">
@@ -1048,6 +1122,13 @@ export default function AdminPage() {
                           title={u.active ? "Deactivate" : "Activate"}
                         >
                           <Power className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteEntity("university", u.universityCode)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                          title="Delete / Hide University"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
@@ -1124,11 +1205,11 @@ export default function AdminPage() {
               <div className="flex justify-between items-center border-b border-indigo-700/30 dark:border-slate-800 pb-3">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Briefcase className="w-4 h-4 text-emerald-400" />
-                  <span>Authorized Hiring Partners ({companies.length})</span>
+                  <span>Authorized Hiring Partners ({visibleCompanies.length})</span>
                 </h3>
               </div>
               <div className="divide-y divide-indigo-700/30 max-h-80 overflow-y-auto">
-                {companies.length === 0 ? (
+                {visibleCompanies.length === 0 ? (
                   <div className="text-center py-10 px-4 border border-dashed border-emerald-800/40 rounded-2xl bg-slate-950/40">
                     <Briefcase className="w-9 h-9 text-emerald-500/40 mx-auto mb-2" />
                     <p className="text-xs font-semibold text-white">No Hiring Partners Authorized Yet</p>
@@ -1137,7 +1218,7 @@ export default function AdminPage() {
                     </p>
                   </div>
                 ) : (
-                  companies.map((c) => (
+                  visibleCompanies.map((c) => (
                     <div key={c.id} className="py-3 flex items-center justify-between gap-2 text-xs">
                       <div>
                         <div className="font-bold text-white">
@@ -1158,6 +1239,13 @@ export default function AdminPage() {
                           title={c.active ? "Deactivate" : "Activate"}
                         >
                           <Power className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteEntity("company", c.companyCode)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                          title="Delete / Hide Company"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>

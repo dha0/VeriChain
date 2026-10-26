@@ -333,6 +333,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, requests: [] });
     }
 
+    // ----------------------------------------------------
+    // Admin Action: Delete / Hide Institution
+    // ----------------------------------------------------
+    if (action === "delete_institution") {
+      const code = (body.codeIdentifier || body.code || "").trim().toUpperCase();
+      if (code) {
+        await prisma.institutionCredential.deleteMany({
+          where: { codeIdentifier: code },
+        });
+        await prisma.accessRequest.deleteMany({
+          where: { proposedCode: code },
+        });
+      }
+      return NextResponse.json({ success: true, deleted: code });
+    }
+
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (e: any) {
     return NextResponse.json({ error: e.message || "Failed to process request" }, { status: 500 });

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getReadOnlyServerContract } from "@/lib/serverContract";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -29,7 +30,6 @@ export async function GET() {
     const contract = getReadOnlyServerContract();
 
     // Query on-chain statistics
-    // getAllStats returns: (totalUniversities, totalStudents, totalCredentials, totalAchievements, totalCompanies, totalVerifications, totalRequests)
     let universities = 0;
     let students = 0;
     let credentials = 0;
@@ -52,6 +52,15 @@ export async function GET() {
       companies = Number(counters[3]);
       verifications = Number(counters[4]);
     }
+
+    // Synchronize with active credentials in database to exclude old defunct test numbers
+    try {
+      const dbInstitutions = await prisma.institutionCredential.findMany();
+      const validUnis = dbInstitutions.filter((i: any) => i.entityType === "university").length;
+      const validComps = dbInstitutions.filter((i: any) => i.entityType === "company").length;
+      if (validUnis > 0) universities = validUnis;
+      if (validComps > 0) companies = validComps;
+    } catch {}
 
     cachedStats = {
       universities,
