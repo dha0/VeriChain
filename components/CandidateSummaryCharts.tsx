@@ -33,7 +33,8 @@ export function CandidateSummaryCharts({
   credentials = [],
   achievements = [],
 }: CandidateSummaryChartsProps) {
-  const percentage = Math.min(100, Math.max(0, student.percentage || 85));
+  const pctValue = Number(student.percentage);
+  const percentage = Math.min(100, Math.max(0, (!isNaN(pctValue) && pctValue > 0) ? pctValue : 85));
 
   // Determine honor classification
   const getHonorsLabel = (pct: number) => {

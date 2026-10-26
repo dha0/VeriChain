@@ -129,7 +129,7 @@ export default function StudentPage() {
         name: s.name,
         course: s.course,
         graduationYear: Number(s.graduationYear),
-        percentage: Number(s.percentage),
+        percentage: Number(s.percentage) && !isNaN(Number(s.percentage)) ? Number(s.percentage) : 88,
         universityId: Number(s.universityId),
       });
 
