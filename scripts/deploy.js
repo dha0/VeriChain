@@ -32,6 +32,18 @@ async function main() {
   console.log("-------------------------------------------------------");
   console.log("Deployed Contract Address:", contractAddress);
   console.log("Admin Address:", deployer.address);
+
+  // Authorized Relayer: Constructor sets deployer by default; check if separate RELAYER_ADDRESS is set
+  const explicitRelayer = process.env.RELAYER_ADDRESS?.trim();
+  if (explicitRelayer && explicitRelayer.toLowerCase() !== deployer.address.toLowerCase()) {
+    console.log(`Setting explicit authorized relayer: ${explicitRelayer}`);
+    const tx = await contract.setAuthorizedRelayer(explicitRelayer);
+    await tx.wait();
+    console.log("Authorized relayer updated on-chain.");
+  } else {
+    const onChainRelayer = await contract.authorizedRelayer();
+    console.log("Authorized Relayer Address:", onChainRelayer, "(configured automatically)");
+  }
   console.log("-------------------------------------------------------");
 
   // Save address into contractAddress.ts with full network metadata
@@ -62,6 +74,18 @@ export const SUPPORTED_NETWORK_NAME = "${networkName}";
 `;
   fs.writeFileSync(contractAddressTsPath, tsContent);
   console.log(" Updated contracts/contractAddress.ts with deployed address.");
+
+  // Save updated ABI into contracts/contractABI.json
+  const artifactPath = path.join(
+    __dirname,
+    "../artifacts/contracts/ITHiringMarksVerification.sol/ITHiringMarksVerification.json"
+  );
+  if (fs.existsSync(artifactPath)) {
+    const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+    const abiPath = path.join(__dirname, "../contracts/contractABI.json");
+    fs.writeFileSync(abiPath, JSON.stringify(artifact.abi, null, 2));
+    console.log(" Updated contracts/contractABI.json with compiled ABI.");
+  }
 
   console.log("\nNext Steps:");
   console.log(`1. Ensure NEXT_PUBLIC_CONTRACT_ADDRESS=${contractAddress} in .env.local`);

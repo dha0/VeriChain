@@ -20,8 +20,11 @@ export interface MarksheetGenerationData {
   course: string;
   graduationYear: number;
   percentage?: number;
+  totalMarks?: number;
+  maxTotalMarks?: number;
+  overallResult?: string;
   cgpa?: number;
-  semester?: string;
+  semester?: string | number;
   documentType?: string;
   academicDistinction?: string;
   verificationUrl: string;
@@ -29,6 +32,8 @@ export interface MarksheetGenerationData {
   blockchainNetwork?: string;
   subjects?: SubjectMark[];
   issueDate?: string;
+  version?: number;
+  recordHash?: string;
 }
 
 /**
@@ -148,7 +153,7 @@ export async function generateMarksheetPDF(data: MarksheetGenerationData): Promi
   // 2. Header Section: University Name & Accreditation
   let cursorY = height - 52;
 
-  const uName = (data.universityName || "VISVESVARAYA TECHNOLOGICAL UNIVERSITY").toUpperCase();
+  const uName = (data.universityName || "ACCREDITED UNIVERSITY AUTHORITY").toUpperCase();
   const uNameWidth = fontSerifBold.widthOfTextAtSize(uName, 17);
   page.drawText(uName, {
     x: (width - uNameWidth) / 2,
@@ -159,7 +164,7 @@ export async function generateMarksheetPDF(data: MarksheetGenerationData): Promi
   });
 
   cursorY -= 15;
-  const subText = `${data.universityCode || "VTU-KA-001"} · ACCREDITED STATE TECHNOLOGICAL UNIVERSITY`;
+  const subText = `${data.universityCode ? data.universityCode + " · " : ""}ACCREDITED INSTITUTIONAL AUTHORITY`;
   const subTextWidth = fontRegular.widthOfTextAtSize(subText, 9);
   page.drawText(subText, {
     x: (width - subTextWidth) / 2,
@@ -170,7 +175,7 @@ export async function generateMarksheetPDF(data: MarksheetGenerationData): Promi
   });
 
   cursorY -= 12;
-  const stateText = "GOVERNMENT OF KARNATAKA · APPROVED BY AICTE & UGC · NEW DELHI";
+  const stateText = "ACADEMIC CREDENTIAL LEDGER · VERIFIED BY ETHEREUM PROTOCOL";
   const stateTextWidth = fontRegular.widthOfTextAtSize(stateText, 7.5);
   page.drawText(stateText, {
     x: (width - stateTextWidth) / 2,
@@ -226,9 +231,9 @@ export async function generateMarksheetPDF(data: MarksheetGenerationData): Promi
   // Background box for student info
   page.drawRectangle({
     x: 40,
-    y: cursorY - 56,
+    y: cursorY - 74,
     width: width - 80,
-    height: 70,
+    height: 88,
     color: lightBg,
     borderColor: borderGray,
     borderWidth: 0.8,
@@ -258,136 +263,176 @@ export async function generateMarksheetPDF(data: MarksheetGenerationData): Promi
   // Row 3
   infoY -= 18;
   page.drawText("INSTITUTION CODE:", { x: labelX1, y: infoY, size: 8.5, font: fontBold, color: textMuted });
-  page.drawText(data.universityCode, { x: valX1, y: infoY, size: 9, font: fontRegular, color: textDark });
+  page.drawText(`${data.universityCode} · ${data.universityName || ""}`, { x: valX1, y: infoY, size: 9, font: fontRegular, color: textDark });
 
-  const pct = data.percentage || 85;
-  const calcCgpa = data.cgpa || (pct / 9.5).toFixed(2);
-  const distinction = data.academicDistinction || (pct >= 75 ? "FIRST CLASS WITH DISTINCTION" : "FIRST CLASS");
+  const pct = data.percentage ?? 0;
+  const calcCgpa = data.cgpa || (pct > 0 ? (pct / 9.5).toFixed(2) : "0.00");
+  const distinction = data.academicDistinction || (pct >= 75 ? "FIRST CLASS WITH DISTINCTION" : pct >= 60 ? "FIRST CLASS" : pct >= 40 ? "SECOND CLASS" : "FAIL");
 
   page.drawText("CLASSIFICATION:", { x: labelX2, y: infoY, size: 8.5, font: fontBold, color: textMuted });
   page.drawText(distinction, { x: valX2, y: infoY, size: 8.5, font: fontBold, color: emerald });
 
-  // 5. Subject Marksheet Table
-  cursorY -= 75;
+  // Row 4: Version & Issue Date
+  infoY -= 18;
+  page.drawText("REPORT VERSION:", { x: labelX1, y: infoY, size: 8.5, font: fontBold, color: textMuted });
+  page.drawText(`Version ${data.version || 1}`, { x: valX1, y: infoY, size: 9, font: fontBold, color: bluePrimary });
 
-  const subjects = (data.subjects && data.subjects.length > 0)
-    ? data.subjects
-    : getDefaultSubjectsForCourse(data.course, pct);
+  page.drawText("ISSUE DATE:", { x: labelX2, y: infoY, size: 8.5, font: fontBold, color: textMuted });
+  page.drawText(data.issueDate || new Date().toISOString().split("T")[0], { x: valX2, y: infoY, size: 8.5, font: fontRegular, color: textDark });
 
-  // Table Dimensions & Columns
+  // 5. Subject Marksheet Table or "Marks not available"
+  cursorY -= 92;
+
+  const hasSubjects = Boolean(data.subjects && data.subjects.length > 0);
   const tableX = 40;
   const tableWidth = width - 80;
-  const colWidths = {
-    sl: 28,
-    code: 58,
-    title: 220,
-    credits: 45,
-    max: 50,
-    obtained: 55,
-    grade: 59,
-  };
 
-  // Table Header Background
-  page.drawRectangle({
-    x: tableX,
-    y: cursorY - 14,
-    width: tableWidth,
-    height: 18,
-    color: bluePrimary,
-  });
+  if (hasSubjects) {
+    const subjects = data.subjects!;
+    const colWidths = {
+      sl: 28,
+      code: 58,
+      title: 220,
+      credits: 45,
+      max: 50,
+      obtained: 55,
+      grade: 59,
+    };
 
-  // Table Header Labels
-  let curX = tableX;
-  page.drawText("#", { x: curX + 10, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
-  curX += colWidths.sl;
-  page.drawText("SUB CODE", { x: curX + 6, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
-  curX += colWidths.code;
-  page.drawText("COURSE / SUBJECT TITLE", { x: curX + 8, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
-  curX += colWidths.title;
-  page.drawText("CREDITS", { x: curX + 4, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
-  curX += colWidths.credits;
-  page.drawText("MAX", { x: curX + 14, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
-  curX += colWidths.max;
-  page.drawText("SCORED", { x: curX + 10, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
-  curX += colWidths.obtained;
-  page.drawText("GRADE", { x: curX + 8, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
+    // Table Header Background
+    page.drawRectangle({
+      x: tableX,
+      y: cursorY - 14,
+      width: tableWidth,
+      height: 18,
+      color: bluePrimary,
+    });
 
-  cursorY -= 14;
+    // Table Header Labels
+    let curX = tableX;
+    page.drawText("#", { x: curX + 10, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
+    curX += colWidths.sl;
+    page.drawText("SUB CODE", { x: curX + 6, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
+    curX += colWidths.code;
+    page.drawText("COURSE / SUBJECT TITLE", { x: curX + 8, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
+    curX += colWidths.title;
+    page.drawText("CREDITS", { x: curX + 4, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
+    curX += colWidths.credits;
+    page.drawText("MAX", { x: curX + 14, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
+    curX += colWidths.max;
+    page.drawText("SCORED", { x: curX + 10, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
+    curX += colWidths.obtained;
+    page.drawText("GRADE", { x: curX + 8, y: cursorY - 9, size: 8, font: fontBold, color: rgb(1, 1, 1) });
 
-  // Table Rows
-  let totalCredits = 0;
-  let totalMax = 0;
-  let totalScored = 0;
+    cursorY -= 14;
 
-  for (let i = 0; i < subjects.length; i++) {
-    const s = subjects[i];
-    totalCredits += s.credits;
-    totalMax += s.maxMarks;
-    totalScored += s.marksObtained;
+    // Table Rows
+    let totalCredits = 0;
+    let totalMax = 0;
+    let totalScored = 0;
 
-    const rowHeight = 17;
-    cursorY -= rowHeight;
+    for (let i = 0; i < subjects.length; i++) {
+      const s = subjects[i];
+      totalCredits += s.credits || 0;
+      totalMax += s.maxMarks || 100;
+      totalScored += s.marksObtained || 0;
 
-    // Alternating Row background
-    if (i % 2 === 0) {
+      const rowHeight = 17;
+      cursorY -= rowHeight;
+
+      if (i % 2 === 0) {
+        page.drawRectangle({
+          x: tableX,
+          y: cursorY,
+          width: tableWidth,
+          height: rowHeight,
+          color: lightBg,
+        });
+      }
+
       page.drawRectangle({
         x: tableX,
         y: cursorY,
         width: tableWidth,
         height: rowHeight,
-        color: lightBg,
+        borderColor: borderGray,
+        borderWidth: 0.5,
       });
+
+      curX = tableX;
+      page.drawText(String(i + 1), { x: curX + 10, y: cursorY + 5, size: 8, font: fontRegular, color: textMuted });
+      curX += colWidths.sl;
+      page.drawText(s.code, { x: curX + 6, y: cursorY + 5, size: 8, font: fontBold, color: primaryDark });
+      curX += colWidths.code;
+      page.drawText(s.title.length > 38 ? s.title.slice(0, 36) + "..." : s.title, {
+        x: curX + 8,
+        y: cursorY + 5,
+        size: 8,
+        font: fontRegular,
+        color: textDark,
+      });
+      curX += colWidths.title;
+      page.drawText(String(s.credits || 0), { x: curX + 18, y: cursorY + 5, size: 8, font: fontRegular, color: textDark });
+      curX += colWidths.credits;
+      page.drawText(String(s.maxMarks || 100), { x: curX + 14, y: cursorY + 5, size: 8, font: fontRegular, color: textMuted });
+      curX += colWidths.max;
+      page.drawText(String(s.marksObtained || 0), { x: curX + 16, y: cursorY + 5, size: 8.5, font: fontBold, color: bluePrimary });
+      curX += colWidths.obtained;
+      page.drawText(s.grade || "-", { x: curX + 6, y: cursorY + 5, size: 7.5, font: fontBold, color: emerald });
     }
 
-    // Row borders
+    // Aggregate Total Row
+    cursorY -= 20;
     page.drawRectangle({
       x: tableX,
       y: cursorY,
       width: tableWidth,
-      height: rowHeight,
+      height: 20,
+      color: rgb(241 / 255, 245 / 255, 249 / 255),
+      borderColor: bluePrimary,
+      borderWidth: 0.8,
+    });
+
+    const displayScored = data.totalMarks != null ? data.totalMarks : totalScored;
+    const displayMax = data.maxTotalMarks != null ? data.maxTotalMarks : totalMax;
+
+    page.drawText("CONSOLIDATED TOTALS:", { x: tableX + 14, y: cursorY + 6, size: 8.5, font: fontBold, color: bluePrimary });
+    page.drawText(`Credits: ${totalCredits}`, { x: tableX + 285, y: cursorY + 6, size: 8.5, font: fontBold, color: textDark });
+    page.drawText(`Max: ${displayMax}`, { x: tableX + 370, y: cursorY + 6, size: 8.5, font: fontBold, color: textMuted });
+    page.drawText(`Total: ${displayScored}`, { x: tableX + 430, y: cursorY + 6, size: 8.5, font: fontBold, color: bluePrimary });
+    page.drawText(`Aggregate: ${pct.toFixed(2)}%`, { x: tableX + 480, y: cursorY + 6, size: 8.5, font: fontBold, color: emerald });
+  } else {
+    // If marks are missing, print "Marks not available"
+    cursorY -= 15;
+    page.drawRectangle({
+      x: tableX,
+      y: cursorY - 50,
+      width: tableWidth,
+      height: 65,
+      color: lightBg,
       borderColor: borderGray,
-      borderWidth: 0.5,
+      borderWidth: 1,
     });
-
-    curX = tableX;
-    page.drawText(String(i + 1), { x: curX + 10, y: cursorY + 5, size: 8, font: fontRegular, color: textMuted });
-    curX += colWidths.sl;
-    page.drawText(s.code, { x: curX + 6, y: cursorY + 5, size: 8, font: fontBold, color: primaryDark });
-    curX += colWidths.code;
-    page.drawText(s.title.length > 38 ? s.title.slice(0, 36) + "..." : s.title, {
-      x: curX + 8,
-      y: cursorY + 5,
-      size: 8,
+    const missingNotice = "Marks not available";
+    const missingWidth = fontBold.widthOfTextAtSize(missingNotice, 14);
+    page.drawText(missingNotice, {
+      x: (width - missingWidth) / 2,
+      y: cursorY - 14,
+      size: 14,
+      font: fontBold,
+      color: textMuted,
+    });
+    const subNotice = "No subject-wise marks breakdown was submitted for this record version.";
+    const subNoticeWidth = fontRegular.widthOfTextAtSize(subNotice, 8.5);
+    page.drawText(subNotice, {
+      x: (width - subNoticeWidth) / 2,
+      y: cursorY - 32,
+      size: 8.5,
       font: fontRegular,
-      color: textDark,
+      color: textMuted,
     });
-    curX += colWidths.title;
-    page.drawText(String(s.credits), { x: curX + 18, y: cursorY + 5, size: 8, font: fontRegular, color: textDark });
-    curX += colWidths.credits;
-    page.drawText(String(s.maxMarks), { x: curX + 14, y: cursorY + 5, size: 8, font: fontRegular, color: textMuted });
-    curX += colWidths.max;
-    page.drawText(String(s.marksObtained), { x: curX + 16, y: cursorY + 5, size: 8.5, font: fontBold, color: bluePrimary });
-    curX += colWidths.obtained;
-    page.drawText(s.grade, { x: curX + 6, y: cursorY + 5, size: 7.5, font: fontBold, color: emerald });
+    cursorY -= 65;
   }
-
-  // Aggregate Total Row
-  cursorY -= 20;
-  page.drawRectangle({
-    x: tableX,
-    y: cursorY,
-    width: tableWidth,
-    height: 20,
-    color: rgb(241 / 255, 245 / 255, 249 / 255),
-    borderColor: bluePrimary,
-    borderWidth: 0.8,
-  });
-
-  page.drawText("CONSOLIDATED TOTALS:", { x: tableX + 14, y: cursorY + 6, size: 8.5, font: fontBold, color: bluePrimary });
-  page.drawText(`Credits: ${totalCredits}`, { x: tableX + 285, y: cursorY + 6, size: 8.5, font: fontBold, color: textDark });
-  page.drawText(`Max: ${totalMax}`, { x: tableX + 370, y: cursorY + 6, size: 8.5, font: fontBold, color: textMuted });
-  page.drawText(`Total: ${totalScored}`, { x: tableX + 430, y: cursorY + 6, size: 8.5, font: fontBold, color: bluePrimary });
-  page.drawText(`Aggregate: ${pct}%`, { x: tableX + 480, y: cursorY + 6, size: 8.5, font: fontBold, color: emerald });
 
   // 6. Cumulative CGPA & Result Summary Box
   cursorY -= 36;
@@ -409,12 +454,13 @@ export async function generateMarksheetPDF(data: MarksheetGenerationData): Promi
     color: primaryDark,
   });
 
-  page.drawText(`FINAL RESULT:  ${distinction}`, {
-    x: tableX + 310,
+  const finalResultLabel = data.overallResult || (distinction === "FAIL" ? "FAIL" : "PASS");
+  page.drawText(`OVERALL RESULT:  ${finalResultLabel}`, {
+    x: tableX + 330,
     y: cursorY + 11,
     size: 9.5,
     font: fontBold,
-    color: emerald,
+    color: finalResultLabel === "PASS" ? emerald : rgb(225 / 255, 29 / 255, 72 / 255),
   });
 
   // 7. Blockchain Verification & Embedded Dynamic QR Code Section
@@ -470,7 +516,7 @@ export async function generateMarksheetPDF(data: MarksheetGenerationData): Promi
   const textLeftX = qrX + qrBoxSize + 18;
   let secY = cursorY + 104;
 
-  page.drawText("✓ ETHEREUM ON-CHAIN CRYPTOGRAPHIC VERIFICATION SEAL", {
+  page.drawText("[VERIFIED] ETHEREUM ON-CHAIN CRYPTOGRAPHIC SEAL", {
     x: textLeftX,
     y: secY,
     size: 9.5,
@@ -488,28 +534,41 @@ export async function generateMarksheetPDF(data: MarksheetGenerationData): Promi
     color: rgb(241 / 255, 245 / 255, 249 / 255),
   });
 
-  secY -= 13;
-  page.drawText("Smart Contract:", { x: textLeftX, y: secY, size: 8, font: fontBold, color: rgb(148 / 255, 163 / 255, 184 / 255) });
-  page.drawText(data.contractAddress || CONTRACT_ADDRESS, {
+  secY -= 12;
+  page.drawText("Record Hash:", { x: textLeftX, y: secY, size: 8, font: fontBold, color: rgb(148 / 255, 163 / 255, 184 / 255) });
+  const dispHash = data.recordHash
+    ? (data.recordHash.length > 44 ? data.recordHash.slice(0, 42) + "..." : data.recordHash)
+    : "N/A";
+  page.drawText(dispHash, {
     x: textLeftX + 90,
     y: secY,
-    size: 7.5,
+    size: 7,
     font: fontRegular,
     color: rgb(56 / 255, 189 / 255, 248 / 255), // Cyan
   });
 
-  secY -= 13;
+  secY -= 12;
+  page.drawText("Smart Contract:", { x: textLeftX, y: secY, size: 8, font: fontBold, color: rgb(148 / 255, 163 / 255, 184 / 255) });
+  page.drawText(data.contractAddress || CONTRACT_ADDRESS, {
+    x: textLeftX + 90,
+    y: secY,
+    size: 7,
+    font: fontRegular,
+    color: rgb(56 / 255, 189 / 255, 248 / 255),
+  });
+
+  secY -= 12;
   page.drawText("Verification URL:", { x: textLeftX, y: secY, size: 8, font: fontBold, color: rgb(148 / 255, 163 / 255, 184 / 255) });
   const displayUrl = verifyTargetUrl.length > 48 ? verifyTargetUrl.slice(0, 46) + "..." : verifyTargetUrl;
   page.drawText(displayUrl, {
     x: textLeftX + 90,
     y: secY,
-    size: 7.5,
+    size: 7,
     font: fontRegular,
     color: rgb(241 / 255, 245 / 255, 249 / 255),
   });
 
-  secY -= 15;
+  secY -= 13;
   page.drawText("SCAN WITH ANY SMARTPHONE CAMERA TO VERIFY TAMPER-FREE LEDGER STATUS", {
     x: textLeftX,
     y: secY,
@@ -598,3 +657,6 @@ export function downloadPDFFile(pdfBytes: Uint8Array, fileName: string) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+export const generateStudentReportPDF = generateMarksheetPDF;
+

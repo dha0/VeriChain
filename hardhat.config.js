@@ -7,6 +7,11 @@ try {
   require("dotenv").config({ path: path.resolve(__dirname, ".env.local") });
 } catch (e) {}
 
+// Ensure NODE_ENV is set to 'test' when running hardhat test
+if (process.argv.includes("test") || process.env.npm_lifecycle_event === "test") {
+  process.env.NODE_ENV = "test";
+}
+
 const SEPOLIA_RPC_URL =
   process.env.SEPOLIA_RPC_URL || "https://gateway.tenderly.co/public/sepolia";
 const rawPrivateKey = process.env.PRIVATE_KEY?.trim() || "";
@@ -27,9 +32,13 @@ module.exports = {
     },
   },
   networks: {
+    hardhat: {
+      allowUnlimitedContractSize: true,
+    },
     localhost: {
       url: "http://127.0.0.1:8545",
       chainId: 31337,
+      allowUnlimitedContractSize: true,
     },
     sepolia: {
       url: SEPOLIA_RPC_URL,

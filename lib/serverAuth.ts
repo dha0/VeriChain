@@ -1,17 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as jose from "jose";
 import { ethers } from "ethers";
+import crypto from "crypto";
 import { UserRole } from "@/types";
+import { prisma } from "@/lib/prisma";
 
 /**
  * Returns the JWT secret from environment variables.
- * Enforces NO DEFAULT fallback strings.
+ * Enforces NO DEFAULT fallback strings and a minimum 32-character length.
  */
 export function getJwtSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET?.trim() || process.env.SESSION_SECRET?.trim();
   if (!secret) {
     throw new Error(
       "Server Configuration Error: Mandatory environment variable JWT_SECRET is missing. No default secret permitted."
+    );
+  }
+  if (secret.length < 32) {
+    throw new Error(
+      "Security Configuration Error: JWT_SECRET must be at least 32 characters in length for cryptographic security."
     );
   }
   return new TextEncoder().encode(secret);
@@ -34,48 +41,22 @@ export interface SessionPayload {
   } | null;
 }
 
-// ----------------------------------------------------
-// 1. Rate Limiting & Account Lockout Engine
-// ----------------------------------------------------
-interface AttemptRecord {
-  count: number;
-  firstAttemptAt: number;
-  lockedUntil: number | null;
-}
-
-interface OTPRecord {
-  code: string;
-  usn: string;
-  expiresAt: number;
-}
-
-// In-memory state across warm serverless requests
-declare global {
-  var __authRateLimitMap: Map<string, AttemptRecord> | undefined;
-  var __authNonceMap: Map<string, { nonce: string; expiresAt: number }> | undefined;
-  var __studentOTPStore: Map<string, OTPRecord> | undefined;
-}
-
-const rateLimitMap: Map<string, AttemptRecord> =
-  global.__authRateLimitMap || (global.__authRateLimitMap = new Map());
-
-const nonceMap: Map<string, { nonce: string; expiresAt: number }> =
-  global.__authNonceMap || (global.__authNonceMap = new Map());
-
-const otpStore: Map<string, OTPRecord> =
-  global.__studentOTPStore || (global.__studentOTPStore = new Map());
-
 export const MAX_FAILED_ATTEMPTS = 5;
 export const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 export const WINDOW_DURATION_MS = 15 * 60 * 1000;
 
-export function checkRateLimit(key: string): {
+// ----------------------------------------------------
+// 1. Distributed Rate Limiting & Account Lockout Engine (Prisma)
+// ----------------------------------------------------
+export async function checkRateLimit(key: string): Promise<{
   allowed: boolean;
   remainingAttempts: number;
   lockoutRemainingSeconds?: number;
-} {
-  const now = Date.now();
-  const record = rateLimitMap.get(key);
+}> {
+  const now = new Date();
+  const record = await prisma.rateLimitCounter.findUnique({
+    where: { key },
+  });
 
   if (!record) {
     return { allowed: true, remainingAttempts: MAX_FAILED_ATTEMPTS };
@@ -83,7 +64,7 @@ export function checkRateLimit(key: string): {
 
   // Active lockout check
   if (record.lockedUntil && record.lockedUntil > now) {
-    const remainingSeconds = Math.ceil((record.lockedUntil - now) / 1000);
+    const remainingSeconds = Math.ceil((record.lockedUntil.getTime() - now.getTime()) / 1000);
     return {
       allowed: false,
       remainingAttempts: 0,
@@ -92,8 +73,8 @@ export function checkRateLimit(key: string): {
   }
 
   // Window expired -> reset
-  if (now - record.firstAttemptAt > WINDOW_DURATION_MS) {
-    rateLimitMap.delete(key);
+  if (now.getTime() - record.firstAttemptAt.getTime() > WINDOW_DURATION_MS) {
+    await prisma.rateLimitCounter.delete({ where: { key } }).catch(() => {});
     return { allowed: true, remainingAttempts: MAX_FAILED_ATTEMPTS };
   }
 
@@ -103,23 +84,44 @@ export function checkRateLimit(key: string): {
   };
 }
 
-export function recordFailedAttempt(key: string): {
+export async function recordFailedAttempt(key: string): Promise<{
   locked: boolean;
   remainingAttempts: number;
   lockoutRemainingSeconds?: number;
-} {
-  const now = Date.now();
-  let record = rateLimitMap.get(key);
+}> {
+  const now = new Date();
+  let record = await prisma.rateLimitCounter.findUnique({
+    where: { key },
+  });
 
-  if (!record || now - record.firstAttemptAt > WINDOW_DURATION_MS) {
-    record = { count: 1, firstAttemptAt: now, lockedUntil: null };
+  if (!record || now.getTime() - record.firstAttemptAt.getTime() > WINDOW_DURATION_MS) {
+    record = await prisma.rateLimitCounter.upsert({
+      where: { key },
+      update: {
+        count: 1,
+        firstAttemptAt: now,
+        lockedUntil: null,
+      },
+      create: {
+        key,
+        count: 1,
+        firstAttemptAt: now,
+        lockedUntil: null,
+      },
+    });
   } else {
-    record.count += 1;
+    record = await prisma.rateLimitCounter.update({
+      where: { key },
+      data: { count: { increment: 1 } },
+    });
   }
 
   if (record.count >= MAX_FAILED_ATTEMPTS) {
-    record.lockedUntil = now + LOCKOUT_DURATION_MS;
-    rateLimitMap.set(key, record);
+    const lockedUntil = new Date(now.getTime() + LOCKOUT_DURATION_MS);
+    await prisma.rateLimitCounter.update({
+      where: { key },
+      data: { lockedUntil },
+    });
     return {
       locked: true,
       remainingAttempts: 0,
@@ -127,45 +129,61 @@ export function recordFailedAttempt(key: string): {
     };
   }
 
-  rateLimitMap.set(key, record);
   return {
     locked: false,
-    remainingAttempts: MAX_FAILED_ATTEMPTS - record.count,
+    remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - record.count),
   };
 }
 
-export function resetFailedAttempts(key: string) {
-  rateLimitMap.delete(key);
+export async function resetFailedAttempts(key: string): Promise<void> {
+  await prisma.rateLimitCounter.deleteMany({ where: { key } }).catch(() => {});
 }
 
 // ----------------------------------------------------
-// 2. SIWE-Style Nonce & Signature Verification
+// 2. SIWE-Style Nonce & Signature Verification (Prisma)
 // ----------------------------------------------------
-export function generateAuthNonce(wallet: string): string {
+export async function generateAuthNonce(wallet: string): Promise<string> {
   const cleanWallet = wallet.trim().toLowerCase();
   const nonce = `verichain_${ethers.hexlify(ethers.randomBytes(16)).slice(2)}`;
-  nonceMap.set(cleanWallet, {
-    nonce,
-    expiresAt: Date.now() + 5 * 60 * 1000, // 5 min TTL
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 min TTL
+
+  // Delete expired nonces for this wallet
+  await prisma.authNonce.deleteMany({
+    where: { wallet: cleanWallet },
+  }).catch(() => {});
+
+  await prisma.authNonce.create({
+    data: {
+      wallet: cleanWallet,
+      nonce,
+      expiresAt,
+      used: false,
+    },
   });
+
   return nonce;
 }
 
-export function verifyWalletSignature(
+export async function verifyWalletSignature(
   wallet: string,
   message: string,
   signature: string
-): boolean {
+): Promise<boolean> {
   try {
     const cleanWallet = wallet.trim().toLowerCase();
-    const nonceRecord = nonceMap.get(cleanWallet);
+    const nonceRecord = await prisma.authNonce.findFirst({
+      where: {
+        wallet: cleanWallet,
+        used: false,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: "desc" },
+    });
 
-    // Nonce must exist and not be expired
-    if (!nonceRecord || nonceRecord.expiresAt < Date.now()) {
+    if (!nonceRecord) {
       return false;
     }
 
-    // Challenge message must include the exact issued nonce
     if (!message.includes(nonceRecord.nonce)) {
       return false;
     }
@@ -174,41 +192,172 @@ export function verifyWalletSignature(
     const isValid = recoveredAddress.trim().toLowerCase() === cleanWallet;
 
     if (isValid) {
-      // Consume nonce immediately so it cannot be replayed
-      nonceMap.delete(cleanWallet);
+      // Mark as used immediately to eliminate replay attacks
+      await prisma.authNonce.update({
+        where: { id: nonceRecord.id },
+        data: { used: true },
+      }).catch(() => {});
     }
+
     return isValid;
-  } catch {
+  } catch (err) {
+    console.error("[verifyWalletSignature error]", err);
     return false;
   }
 }
 
 // ----------------------------------------------------
-// 3. Student Email OTP Engine
+// 3. Student Registered Profile & Email Management (Prisma)
 // ----------------------------------------------------
-export function generateStudentOTP(usn: string): { otp: string; expiresAt: number } {
+export async function getStudentRegisteredEmail(usn: string): Promise<string | null> {
   const cleanUsn = usn.trim().toUpperCase();
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 min TTL
-  otpStore.set(cleanUsn, { code: otp, usn: cleanUsn, expiresAt });
-  return { otp, expiresAt };
+  const profile = await prisma.studentProfile.findUnique({
+    where: { usn: cleanUsn },
+  });
+  return profile ? profile.email : null;
 }
 
-export function verifyStudentOTP(usn: string, providedOtp: string): boolean {
-  const cleanUsn = usn.trim().toUpperCase();
-  const record = otpStore.get(cleanUsn);
-  if (!record || record.expiresAt < Date.now()) {
-    return false;
-  }
-  const isMatch = record.code === providedOtp.trim();
-  if (isMatch) {
-    otpStore.delete(cleanUsn); // consume OTP single-use
-  }
-  return isMatch;
+export async function upsertStudentProfile(data: {
+  usn: string;
+  name: string;
+  email: string;
+  course?: string;
+  gradYear?: number;
+  percentage?: number;
+  universityId: number;
+  universityCode?: string;
+  collegeCode?: string;
+}): Promise<void> {
+  const cleanUsn = data.usn.trim().toUpperCase();
+  const cleanEmail = data.email.trim().toLowerCase();
+
+  await prisma.studentProfile.upsert({
+    where: { usn: cleanUsn },
+    update: {
+      name: data.name.trim(),
+      email: cleanEmail,
+      course: data.course || "Computer Science",
+      gradYear: data.gradYear || new Date().getFullYear(),
+      percentage: data.percentage ?? 0,
+      universityId: data.universityId,
+      universityCode: data.universityCode,
+      collegeCode: data.collegeCode,
+    },
+    create: {
+      usn: cleanUsn,
+      name: data.name.trim(),
+      email: cleanEmail,
+      course: data.course || "Computer Science",
+      gradYear: data.gradYear || new Date().getFullYear(),
+      percentage: data.percentage ?? 0,
+      universityId: data.universityId,
+      universityCode: data.universityCode,
+      collegeCode: data.collegeCode,
+    },
+  });
 }
 
 // ----------------------------------------------------
-// 4. Signed httpOnly JWT Session Token Management
+// 4. Student Email OTP Engine with Attempt Tracking (Prisma)
+// ----------------------------------------------------
+export function hashOtp(otp: string): string {
+  const secret = process.env.OTP_SECRET;
+  if (!secret || secret.trim().length === 0) {
+    throw new Error(
+      "Server configuration error: OTP_SECRET environment variable is missing. A secure server secret is required for HMAC."
+    );
+  }
+  return crypto.createHmac("sha256", secret.trim()).update(otp).digest("hex");
+}
+
+export async function generateStudentOTP(usn: string): Promise<{ otp: string; expiresAt: number }> {
+  const cleanUsn = usn.trim().toUpperCase();
+  const otp = crypto.randomInt(100000, 1000000).toString();
+  const hashedCode = hashOtp(otp);
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 min TTL
+
+  await prisma.studentOTP.upsert({
+    where: { usn: cleanUsn },
+    update: {
+      code: hashedCode,
+      expiresAt,
+      failedAttempts: 0,
+    },
+    create: {
+      usn: cleanUsn,
+      code: hashedCode,
+      expiresAt,
+      failedAttempts: 0,
+    },
+  });
+
+  return { otp, expiresAt: expiresAt.getTime() };
+}
+
+export async function verifyStudentOTP(
+  usn: string,
+  providedOtp: string
+): Promise<{
+  valid: boolean;
+  error?: string;
+  remainingAttempts?: number;
+  invalidated?: boolean;
+}> {
+  const cleanUsn = usn.trim().toUpperCase();
+  const now = new Date();
+  const record = await prisma.studentOTP.findUnique({
+    where: { usn: cleanUsn },
+  });
+
+  if (!record || record.expiresAt < now) {
+    if (record) {
+      await prisma.studentOTP.delete({ where: { usn: cleanUsn } }).catch(() => {});
+    }
+    return {
+      valid: false,
+      error: "OTP has expired or does not exist. Please request a new verification code.",
+    };
+  }
+
+  const providedHash = hashOtp(providedOtp.trim());
+  const isMatch =
+    record.code.length === providedHash.length
+      ? crypto.timingSafeEqual(Buffer.from(record.code), Buffer.from(providedHash))
+      : false;
+
+  if (!isMatch) {
+    const updated = await prisma.studentOTP.update({
+      where: { usn: cleanUsn },
+      data: { failedAttempts: { increment: 1 } },
+    });
+
+    const remaining = Math.max(0, 5 - updated.failedAttempts);
+
+    if (updated.failedAttempts >= 5) {
+      await prisma.studentOTP.delete({ where: { usn: cleanUsn } }).catch(() => {});
+      return {
+        valid: false,
+        error: "Maximum failed attempts exceeded (5/5). This OTP has been invalidated for security. Please request a new verification code.",
+        remainingAttempts: 0,
+        invalidated: true,
+      };
+    }
+
+    return {
+      valid: false,
+      error: `Invalid 6-digit OTP. ${remaining} attempts remaining before code is invalidated.`,
+      remainingAttempts: remaining,
+      invalidated: false,
+    };
+  }
+
+  // Consume OTP single-use on successful verification
+  await prisma.studentOTP.delete({ where: { usn: cleanUsn } }).catch(() => {});
+  return { valid: true };
+}
+
+// ----------------------------------------------------
+// 5. Signed httpOnly JWT Session Token Management
 // ----------------------------------------------------
 export async function createSessionJWT(payload: SessionPayload): Promise<string> {
   const secretKey = getJwtSecret();

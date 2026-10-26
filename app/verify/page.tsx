@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   ShieldCheck,
   Search,
@@ -10,456 +10,381 @@ import {
   CheckCircle2,
   XCircle,
   Hash,
-  ExternalLink,
   Upload,
-  Printer,
-  Terminal,
+  Calendar,
+  Layers,
   Sparkles,
+  ArrowRight,
+  RefreshCw,
+  FileText,
 } from "lucide-react";
-import { getContractReadOnly, isMetaMaskInstalled } from "@/lib/ethereum";
-import { computeSHA256 } from "@/lib/crypto";
-import { getIPFSUrl } from "@/lib/pinata";
-import { StatusBadge } from "@/components/StatusBadge";
-import { CandidateSummaryCharts } from "@/components/CandidateSummaryCharts";
-import { RoleGuard } from "@/components/RoleGuard";
-import { Credential, Achievement, CredentialStatus } from "@/types";
+
+interface VerificationResult {
+  valid: boolean;
+  collegeName: string;
+  collegeCode: string;
+  date: string;
+  status: "active" | "superseded" | "revoked";
+  version: number;
+  documentType: string;
+}
 
 export default function VerifyPage() {
-  const [searchType, setSearchType] = useState<"usn" | "name" | "credentialId">("usn");
-  const [searchValue, setSearchValue] = useState("");
+  const [activeTab, setActiveTab] = useState<"hash" | "credentialId" | "file">("hash");
+  const [hashInput, setHashInput] = useState("");
+  const [credIdInput, setCredIdInput] = useState("");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [uploadedHash, setUploadedHash] = useState("");
+
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<VerificationResult | null>(null);
 
-  // Candidate summary charts state
-  const [candidateSummary, setCandidateSummary] = useState<any>(null);
-  const [candidateCreds, setCandidateCreds] = useState<Credential[]>([]);
-  const [candidateAchs, setCandidateAchs] = useState<Achievement[]>([]);
+  // Auto-verify if URL parameters are provided (e.g. from QR code scan: /verify?hash=0x...)
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const urlHash = params.get("hash");
+      const urlCredId = params.get("credentialId");
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setUploadedFile(file);
-      try {
-        const hash = await computeSHA256(file);
-        setUploadedHash(hash);
-      } catch (err: any) {
-        alert("Hash computation failed: " + err.message);
+      if (urlHash) {
+        setHashInput(urlHash);
+        setActiveTab("hash");
+        executeVerification({ hash: urlHash });
+      } else if (urlCredId) {
+        setCredIdInput(urlCredId);
+        setActiveTab("credentialId");
+        executeVerification({ credentialId: urlCredId });
       }
     }
-  };
+  }, []);
 
-  const handleVerify = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchValue.trim()) return;
-
+  const executeVerification = async (payload: { credentialId?: string; hash?: string; file?: File }) => {
     setIsLoading(true);
     setError("");
     setResult(null);
-    setCandidateSummary(null);
-    setCandidateCreds([]);
-    setCandidateAchs([]);
 
     try {
-      const contract = getContractReadOnly();
-      const clean = searchValue.trim();
-      let credId = 0;
-      let sData: any = null;
+      let res: Response;
 
-      if (searchType === "usn") {
-        try {
-          sData = await contract.getStudentByUSN(clean.toUpperCase());
-        } catch (e) {}
-
-        if (!sData || !sData.exists) {
-          throw new Error(`Student USN "${clean}" was not found on the blockchain.`);
-        }
-
-        const studentId = Number(sData.id);
-        const credIds: bigint[] = await contract.getCredentialsByStudent(studentId);
-        if (credIds.length > 0) {
-          credId = Number(credIds[credIds.length - 1]);
-        } else {
-          throw new Error(`No credentials have been issued on-chain for USN "${clean}".`);
-        }
-      } else if (searchType === "name") {
-        const counters = await contract.getCounters();
-        const totalStudents = Number(counters.totalStudents);
-        for (let i = 1; i <= totalStudents; i++) {
-          try {
-            const s = await contract.getStudent(i);
-            if (s.exists && s.name.toLowerCase().includes(clean.toLowerCase())) {
-              sData = s;
-              break;
-            }
-          } catch (e) {}
-        }
-
-        if (!sData) {
-          throw new Error(`No student found matching name "${clean}".`);
-        }
-
-        const studentId = Number(sData.id);
-        const credIds: bigint[] = await contract.getCredentialsByStudent(studentId);
-        credId = credIds.length > 0 ? Number(credIds[credIds.length - 1]) : 1;
+      if (payload.file) {
+        const formData = new FormData();
+        formData.append("file", payload.file);
+        res = await fetch("/api/verify/public", {
+          method: "POST",
+          body: formData,
+        });
       } else {
-        credId = Number(clean);
-      }
-
-      // Fetch Credential
-      let c: any = null;
-      try {
-        c = await contract.getCredential(credId);
-      } catch (e) {
-        c = {
-          credentialId: credId,
-          studentId: sData?.id || 1,
-          universityId: 1,
-          documentType: "Degree Certificate",
-          documentHash: "0x89d2c67aa410b05b38d38102ff98e09653066a5c37894a8520261176b6b71f90",
-          ipfsCID: "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco",
-          issuedAt: Math.floor(Date.now() / 1000) - 86400 * 30,
-          version: 1,
-          status: 0,
-          exists: true,
-        };
-      }
-
-      if (!sData) {
-        try {
-          sData = await contract.getStudent(Number(c.studentId));
-        } catch (e) {}
-      }
-
-      // Fetch Issuing University
-      let u: any = { name: "Visvesvaraya Technological University", universityCode: "VTU-KA-001", active: true };
-      try {
-        u = await contract.getUniversity(c.universityId || 1);
-      } catch (e) {}
-
-      const storedHash = c.documentHash;
-      let hashMatched = true;
-      let hasUploadedDoc = Boolean(uploadedHash);
-
-      if (hasUploadedDoc) {
-        hashMatched = storedHash.toLowerCase() === uploadedHash.toLowerCase();
-      }
-
-      const universityActive = u.active;
-      const credActive = Number(c.status) === CredentialStatus.Active;
-      const isAuthentic = hashMatched && universityActive && credActive;
-
-      // Populate Candidate Summary
-      if (sData) {
-        const studentId = Number(sData.id);
-        const credList: Credential[] = [
-          {
-            credentialId: credId,
-            studentId,
-            universityId: Number(c.universityId),
-            documentType: c.documentType || "Degree Certificate",
-            documentHash: c.documentHash,
-            ipfsCID: c.ipfsCID,
-            issuedAt: Number(c.issuedAt),
-            version: Number(c.version),
-            status: Number(c.status),
-            exists: true,
-          },
-        ];
-        setCandidateCreds(credList);
-
-        try {
-          const achRes = await fetch(`/api/achievements?studentId=${studentId}`);
-          const achData = await achRes.json();
-          if (achData.achievements) {
-            setCandidateAchs(achData.achievements);
-          }
-        } catch (e) {}
-
-        setCandidateSummary({
-          id: studentId,
-          usn: sData.usn,
-          name: sData.name,
-          course: sData.course,
-          graduationYear: Number(sData.graduationYear),
-          percentage: Number(sData.percentage),
-          universityName: u.name,
-          universityCode: u.universityCode,
+        res = await fetch("/api/verify/public", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            credentialId: payload.credentialId,
+            hash: payload.hash,
+          }),
         });
       }
 
-      setResult({
-        credentialId: credId,
-        studentId: Number(c.studentId),
-        studentDetails: sData,
-        documentType: c.documentType || "Degree Certificate",
-        universityName: u.name,
-        universityCode: u.universityCode,
-        universityActive,
-        storedHash,
-        uploadedHash,
-        hasUploadedDoc,
-        hashMatched,
-        status: Number(c.status),
-        version: Number(c.version),
-        ipfsCID: c.ipfsCID,
-        issuedAt: Number(c.issuedAt),
-        isAuthentic,
-      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.error || "No record found");
+        return;
+      }
+
+      setResult(data as VerificationResult);
     } catch (err: any) {
-      setError(err.reason || err.message || "Verification lookup failed.");
+      setError("No record found");
     } finally {
       setIsLoading(false);
     }
   };
 
+  const handleFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (activeTab === "hash") {
+      if (!hashInput.trim()) return;
+      executeVerification({ hash: hashInput.trim() });
+    } else if (activeTab === "credentialId") {
+      if (!credIdInput.trim()) return;
+      executeVerification({ credentialId: credIdInput.trim() });
+    } else if (activeTab === "file") {
+      if (!uploadedFile) return;
+      executeVerification({ file: uploadedFile });
+    }
+  };
+
   return (
-    <RoleGuard allowedRoles={["company", "admin", "university", "student"]} portalName="Authorized Credential Verification">
-      <div className="max-w-5xl mx-auto space-y-8 pb-12">
+    <div className="max-w-4xl mx-auto space-y-8 pb-16 px-4">
       {/* Header */}
-      <div className="text-center space-y-3">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-semibold uppercase">
-          <ShieldCheck className="w-4 h-4" />
-          Authorized Candidate Credential Verification Engine
+      <div className="text-center space-y-3 pt-6">
+        <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-semibold uppercase tracking-wider">
+          <ShieldCheck className="w-4 h-4 text-sky-400" />
+          Public Decentralized Ledger Verification
         </div>
-        <h1 className="text-3xl sm:text-4xl font-extrabold text-white">
-          Decentralized Credential Verification & Candidate Charts
+        <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
+          Verify Academic Credentials & Certificates
         </h1>
         <p className="text-xs sm:text-sm text-slate-400 max-w-2xl mx-auto">
-          Recruiters, hiring teams, and educational evaluators can verify student credentials against permanent Ethereum blockchain records and inspect interactive score charts.
+          Instant on-chain verification powered by Ethereum smart contracts. Query official report hashes, credential IDs, or upload a certificate file for cryptographic tamper detection.
         </p>
       </div>
 
-      {/* Verification Query Card */}
-      <div className="glass-panel rounded-3xl p-6 space-y-4 border border-blue-500/20 bg-slate-900/60 shadow-xl">
-        {/* Toggle Query Type */}
-        <div className="flex gap-4 border-b border-slate-800 pb-3 text-xs">
+      {/* Query Card */}
+      <div className="glass-panel rounded-3xl p-6 sm:p-8 space-y-6 border border-sky-500/20 bg-slate-900/60 shadow-2xl">
+        {/* Toggle Query Mode */}
+        <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-4">
           <button
             type="button"
-            onClick={() => setSearchType("usn")}
-            className={`font-semibold pb-1 border-b-2 transition-colors ${
-              searchType === "usn"
-                ? "border-blue-500 text-blue-400"
-                : "border-transparent text-slate-400 hover:text-slate-200"
+            onClick={() => {
+              setActiveTab("hash");
+              setError("");
+            }}
+            className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              activeTab === "hash"
+                ? "bg-sky-600 text-white shadow-md shadow-sky-600/30"
+                : "bg-slate-950/70 text-slate-400 hover:text-white border border-slate-800"
             }`}
           >
-            Verify by Student USN
+            <Hash className="w-3.5 h-3.5" />
+            <span>Report / Document Hash</span>
           </button>
+
           <button
             type="button"
-            onClick={() => setSearchType("name")}
-            className={`font-semibold pb-1 border-b-2 transition-colors ${
-              searchType === "name"
-                ? "border-blue-500 text-blue-400"
-                : "border-transparent text-slate-400 hover:text-slate-200"
+            onClick={() => {
+              setActiveTab("credentialId");
+              setError("");
+            }}
+            className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              activeTab === "credentialId"
+                ? "bg-sky-600 text-white shadow-md shadow-sky-600/30"
+                : "bg-slate-950/70 text-slate-400 hover:text-white border border-slate-800"
             }`}
           >
-            Search by Candidate Name
+            <FileCheck className="w-3.5 h-3.5" />
+            <span>Credential ID</span>
           </button>
+
           <button
             type="button"
-            onClick={() => setSearchType("credentialId")}
-            className={`font-semibold pb-1 border-b-2 transition-colors ${
-              searchType === "credentialId"
-                ? "border-blue-500 text-blue-400"
-                : "border-transparent text-slate-400 hover:text-slate-200"
+            onClick={() => {
+              setActiveTab("file");
+              setError("");
+            }}
+            className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              activeTab === "file"
+                ? "bg-sky-600 text-white shadow-md shadow-sky-600/30"
+                : "bg-slate-950/70 text-slate-400 hover:text-white border border-slate-800"
             }`}
           >
-            Verify by Credential ID
+            <Upload className="w-3.5 h-3.5" />
+            <span>Upload Certificate File</span>
           </button>
         </div>
 
-        <form onSubmit={handleVerify} className="space-y-4">
-          <div>
-            <label className="block text-xs text-slate-400 mb-1">
-              {searchType === "usn"
-                ? "Student USN / Roll Number"
-                : searchType === "name"
-                ? "Candidate Full Name"
-                : "Credential ID"}
-            </label>
-            <input
-              type="text"
-              required
-              placeholder={
-                searchType === "usn"
-                  ? "Enter Student USN"
-                  : searchType === "name"
-                  ? "Enter Student Name"
-                  : "Enter Credential ID"
-              }
-              value={searchValue}
-              onChange={(e) => setSearchValue(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-xs sm:text-sm text-white focus:outline-none focus:border-blue-500 font-sans"
-            />
-          </div>
-
-          {/* Optional Document Upload for Tamper Verification */}
-          <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2">
-            <div className="flex justify-between items-center text-xs">
-              <span className="font-semibold text-slate-300 flex items-center gap-1.5">
-                <Upload className="w-3.5 h-3.5 text-cyan-400" />
-                Optional: Upload File for 100% Cryptographic Tamper Test
-              </span>
-              <span className="text-[11px] text-slate-500">PDF or Image</span>
-            </div>
-            <input
-              type="file"
-              accept="application/pdf,image/*,.txt"
-              onChange={handleFileUpload}
-              className="w-full text-xs text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-slate-800 file:text-slate-200 hover:file:bg-slate-700 cursor-pointer"
-            />
-            {uploadedHash && (
-              <div className="text-[10px] font-mono text-cyan-400 break-all pt-1">
-                Computed SHA-256: {uploadedHash}
+        {/* Input Form */}
+        <form onSubmit={handleFormSubmit} className="space-y-4">
+          {activeTab === "hash" && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                Report Keccak-256 or Certificate SHA-256 Hash
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. 0x4a9b2f8c1d3e... (found on verified PDF report or QR code)"
+                  value={hashInput}
+                  onChange={(e) => setHashInput(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-xs sm:text-sm text-white focus:outline-none focus:border-sky-500 font-mono"
+                />
               </div>
-            )}
-          </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Enter the 32-byte cryptographic hash printed on the official academic report or certificate.
+              </p>
+            </div>
+          )}
+
+          {activeTab === "credentialId" && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                On-Chain Credential ID
+              </label>
+              <input
+                type="number"
+                min="1"
+                required
+                placeholder="e.g. 1, 2, 3..."
+                value={credIdInput}
+                onChange={(e) => setCredIdInput(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-xs sm:text-sm text-white focus:outline-none focus:border-sky-500 font-mono"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Enter the unique integer identifier assigned during on-chain institutional minting.
+              </p>
+            </div>
+          )}
+
+          {activeTab === "file" && (
+            <div className="space-y-2">
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Upload Original Document / Certificate (PDF, PNG, JPG)
+              </label>
+              <div className="p-6 border-2 border-dashed border-slate-700 hover:border-sky-500/60 rounded-2xl bg-slate-950/70 text-center transition-all cursor-pointer">
+                <input
+                  type="file"
+                  id="public-verify-file"
+                  accept=".pdf,.png,.jpg,.jpeg"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                      setUploadedFile(e.target.files[0]);
+                    }
+                  }}
+                  className="hidden"
+                />
+                <label htmlFor="public-verify-file" className="cursor-pointer space-y-2 block">
+                  <div className="w-12 h-12 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center mx-auto">
+                    <Upload className="w-6 h-6" />
+                  </div>
+                  <div className="text-xs text-slate-300 font-medium">
+                    {uploadedFile ? (
+                      <span className="text-sky-300 font-bold">{uploadedFile.name} ({(uploadedFile.size / 1024).toFixed(1)} KB)</span>
+                    ) : (
+                      <>
+                        <span className="text-sky-400 font-semibold">Click to browse</span> or drag and drop file here
+                      </>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500">Max size 5 MB. Server computes SHA-256 fingerprint in-memory.</p>
+                </label>
+              </div>
+            </div>
+          )}
 
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3 rounded-xl text-xs sm:text-sm shadow-lg shadow-blue-600/20 transition-all"
+            className="w-full py-3 rounded-xl bg-gradient-to-r from-sky-600 via-indigo-600 to-blue-600 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 hover:opacity-95 transition-all shadow-lg shadow-sky-600/25 disabled:opacity-50"
           >
-            {isLoading ? "Querying Ledger & Computing Visuals..." : "Verify Credential & Generate Summary Charts"}
+            {isLoading ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                Querying Ethereum Consensus State...
+              </>
+            ) : (
+              <>
+                <ShieldCheck className="w-4 h-4" />
+                Verify Ledger Authenticity
+              </>
+            )}
           </button>
         </form>
 
+        {/* Error Notification */}
         {error && (
-          <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
-            {error}
+          <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2.5">
+            <XCircle className="w-4 h-4 shrink-0 text-rose-400" />
+            <div>
+              <span className="font-bold">Verification Result: </span>
+              <span>{error}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Verification Success Result Card */}
+        {result && (
+          <div className="p-6 rounded-2xl bg-slate-950/90 border border-emerald-500/30 space-y-5 shadow-xl animate-in fade-in duration-200">
+            {/* Top Validity Badge */}
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center">
+                  <CheckCircle2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>{result.valid ? "Cryptographically Valid Academic Record" : "Invalid / Revoked Record"}</span>
+                  </h3>
+                  <p className="text-xs text-slate-400">Anchored to Ethereum Smart Contract Ledger</p>
+                </div>
+              </div>
+
+              <div>
+                {result.status === "active" ? (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    Active Ledger Record
+                  </span>
+                ) : result.status === "superseded" ? (
+                  <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300">
+                    Superseded by Newer Version
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-rose-500/10 border border-rose-500/30 text-rose-400">
+                    Revoked / Inactive
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Verification Metadata Grid (ZERO Personal Data Leaked) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+              <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-1">
+                <span className="text-slate-400 flex items-center gap-1.5 text-[11px] font-semibold uppercase">
+                  <Building2 className="w-3.5 h-3.5 text-sky-400" />
+                  Issuing / Reviewing Institution
+                </span>
+                <p className="font-bold text-white text-sm">{result.collegeName}</p>
+                <p className="text-slate-400 font-mono text-[11px]">Code: {result.collegeCode}</p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-1">
+                <span className="text-slate-400 flex items-center gap-1.5 text-[11px] font-semibold uppercase">
+                  <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                  Document Type
+                </span>
+                <p className="font-bold text-white text-sm">{result.documentType}</p>
+                <p className="text-slate-400 text-[11px]">Official Credential Record</p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-1">
+                <span className="text-slate-400 flex items-center gap-1.5 text-[11px] font-semibold uppercase">
+                  <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                  Document Version
+                </span>
+                <p className="font-bold text-white text-sm">Version {result.version}</p>
+                <p className="text-slate-400 text-[11px]">
+                  {result.status === "active" ? "Current official active version" : "Historical archived snapshot"}
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-1">
+                <span className="text-slate-400 flex items-center gap-1.5 text-[11px] font-semibold uppercase">
+                  <Calendar className="w-3.5 h-3.5 text-amber-400" />
+                  Ledger Commitment Date
+                </span>
+                <p className="font-bold text-white text-sm">
+                  {new Date(result.date).toLocaleDateString("en-US", {
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </p>
+                <p className="text-slate-400 font-mono text-[11px]">
+                  {new Date(result.date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </p>
+              </div>
+            </div>
+
+            {/* Privacy Compliance Banner */}
+            <div className="p-3 rounded-xl bg-sky-950/30 border border-sky-900/40 text-[11px] text-sky-300 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 shrink-0 text-sky-400" />
+              <span>
+                <strong>Zero Personal Data Guarantee:</strong> Compliant with GDPR Article 17 (&quot;Right to be Forgotten&quot;). No candidate names, marks, grades, emails, or wallet keys are accessible via this public endpoint.
+              </span>
+            </div>
           </div>
         )}
       </div>
-
-      {/* Candidate Summary Charts Component */}
-      {candidateSummary && (
-        <div className="space-y-4">
-          <div className="flex items-center gap-2 text-white font-bold text-base px-1">
-            <Sparkles className="w-5 h-5 text-indigo-400" />
-            <span>Candidate Performance & Skill Analytics Dossier</span>
-          </div>
-          <CandidateSummaryCharts
-            student={candidateSummary}
-            credentials={candidateCreds}
-            achievements={candidateAchs}
-          />
-        </div>
-      )}
-
-      {/* Verification Result Receipt */}
-      {result && (
-        <div
-          className={`glass-panel rounded-3xl p-6 sm:p-8 space-y-6 border shadow-2xl ${
-            result.isAuthentic
-              ? "border-emerald-500/40 bg-emerald-950/10"
-              : "border-rose-500/40 bg-rose-950/10"
-          }`}
-        >
-          {/* Header Strip */}
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-4">
-            <div>
-              <span className="text-[11px] font-mono text-slate-400 uppercase">
-                Audit Results for Credential #{result.credentialId} (v{result.version}.0) · {result.documentType}
-              </span>
-              <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2 mt-0.5">
-                {result.isAuthentic ? (
-                  <CheckCircle2 className="w-6 h-6 text-emerald-400" />
-                ) : (
-                  <XCircle className="w-6 h-6 text-rose-400" />
-                )}
-                {result.isAuthentic ? "GENUINE ACADEMIC CREDENTIAL" : "VERIFICATION FAILED / TAMPERED"}
-              </h2>
-            </div>
-            <div className="flex items-center gap-2">
-              <StatusBadge status={result.isAuthentic ? "authentic" : "tampered"} size="lg" />
-              <button
-                onClick={() => window.print()}
-                className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 hover:border-slate-500 text-xs text-slate-200 flex items-center gap-1.5 transition-colors"
-              >
-                <Printer className="w-3.5 h-3.5" />
-                Print
-              </button>
-            </div>
-          </div>
-
-          {/* ASCII Verification Receipt */}
-          <div className="p-4 rounded-2xl bg-black/90 border border-slate-800 text-[11px] font-mono leading-relaxed text-slate-300 overflow-x-auto whitespace-pre">
-{`╔═══════════════════════════════════════════════════════════════════════════════════════════════════════╗
-║                             BLOCKCHAIN VERIFICATION AUDIT RECEIPT                                     ║
-╠═══════════════════════════════════════════════════════════════════════════════════════════════════════╣
-  Credential ID:      #${result.credentialId} (Version ${result.version}.0)
-  Document Category:  ${result.documentType}
-  Student Details:    ${result.studentDetails ? `${result.studentDetails.name} (${result.studentDetails.usn})` : `Student ID #${result.studentId}`}
-  Issuing Authority:  ${result.universityName} (${result.universityCode})
-  Ledger Status:      ${result.status === 0 ? "ACTIVE" : result.status === 2 ? "SUSPENDED" : "REVOKED"}
-─────────────────────────────────────────────────────────────────────────────────────────────────────────
-  CRYPTOGRAPHIC INTEGRITY:
-  Blockchain Hash:    ${result.storedHash}
-  Uploaded Doc Hash:  ${result.hasUploadedDoc ? result.uploadedHash : "N/A (Presence Check)"}
-  Cryptographic Match: ${result.hasUploadedDoc ? (result.hashMatched ? "100% BITSTREAM MATCH" : "TAMPERED / MISMATCH") : "ON-CHAIN ANCHOR CONFIRMED"}
-╠═══════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║ FINAL VERDICT:      ${result.isAuthentic ? "VERIFIED DOCUMENT (SAFE FOR RECRUITER ACCEPTANCE)" : "FAILED (UNVERIFIED / TAMPERED)"}
-╚═══════════════════════════════════════════════════════════════════════════════════════════════════════╝`}
-          </div>
-
-          {/* Core Verification Facts */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs font-sans">
-            <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
-              <span className="text-slate-400 text-[11px]">Issuing University</span>
-              <div className="font-semibold text-white">{result.universityName}</div>
-              <div className="text-slate-400 font-mono text-[10px]">Code: {result.universityCode}</div>
-              <div className="pt-1">
-                <StatusBadge status={result.universityActive ? "active" : "inactive"} size="sm" />
-              </div>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
-              <span className="text-slate-400 text-[11px]">Credential Lifecycle</span>
-              <div className="font-semibold text-white">{result.documentType}</div>
-              <div className="pt-2">
-                <StatusBadge status={result.status} size="sm" />
-              </div>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
-              <span className="text-slate-400 text-[11px]">Tamper Audit</span>
-              <div className="font-semibold text-white">
-                {result.hasUploadedDoc ? (
-                  result.hashMatched ? (
-                    <span className="text-emerald-400 font-bold">100% SHA-256 Match</span>
-                  ) : (
-                    <span className="text-rose-400 font-bold">Hash Mismatch</span>
-                  )
-                ) : (
-                  <span className="text-slate-400">Anchor Verified</span>
-                )}
-              </div>
-              <div className="text-[10px] text-slate-500 pt-1">
-                Issued: {new Date(result.issuedAt * 1000).toLocaleDateString()}
-              </div>
-            </div>
-          </div>
-
-          {/* Decentralized IPFS Storage Link */}
-          <div className="flex justify-between items-center text-xs pt-2 border-t border-slate-800">
-            <span className="text-slate-400 font-mono text-[11px]">
-              IPFS CID: {result.ipfsCID.slice(0, 16)}...
-            </span>
-            <a
-              href={getIPFSUrl(result.ipfsCID)}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 text-blue-400 hover:text-blue-300 font-medium"
-            >
-              Inspect Original on IPFS <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-          </div>
-        </div>
-      )}
-      </div>
-    </RoleGuard>
+    </div>
   );
 }

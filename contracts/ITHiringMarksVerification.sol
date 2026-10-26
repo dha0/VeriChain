@@ -5,13 +5,16 @@ pragma solidity ^0.8.20;
  * @title ITHiringMarksVerification
  * @dev Decentralized Academic Marks, Credentials, and Skill Verification System for IT Hiring.
  * Features:
- *  - Role-based Access Control (Admin, Accredited University, Authorized Company, Candidate)
- *  - Single & Bulk Student Registration and Credential Issuance
- *  - Multi-Document Support (Degrees, Marksheets, Transcripts, Certifications)
- *  - Full Lifecycle Management (Active, Suspended, Reactivated, Revoked)
+ *  - Role-based Access Control (Admin, Accredited College/University, Authorized Company, Candidate)
+ *  - Authorized Relayer Architecture: all write functions accept calls ONLY from the authorized relayer
+ *  - College Binding: Every college stores its 2-letter college code and affiliating university
+ *  - USN Format Verification: 1 digit + 2-letter college code + 2-digit year + 2-letter branch + 3 digits
+ *  - Cryptographic Marks Privacy: Stores only cryptographic hashes on-chain (bytes32 marksHash), no plaintext marks/percentages
+ *  - Full Credential Lifecycle Management (Active, Suspended, Reactivated, Revoked)
+ *  - Strict College Ownership: Student actions and credentials strictly tied to their respective college
  *  - Tamper-proof Document Integrity via SHA-256 (bytes32) Cryptographic Hash Matching
  *  - Content-Addressed Encrypted PDF Pinning via IPFS (CID)
- *  - Student Self-Uploaded Achievement Portfolio with University Endorsement Workflow
+ *  - Student Self-Uploaded Achievement Portfolio with College Endorsement Workflow
  *  - Institutional Access Request Queue governed by Admin
  *  - Two-Tier Verification Engine & Permanent On-Chain Audit Trail
  */
@@ -23,15 +26,15 @@ contract ITHiringMarksVerification {
 
     enum CredentialStatus {
         Active,     // 0: Credential is valid, authentic, and recognized
-        Revoked,    // 1: Permanently invalidated by issuing University
+        Revoked,    // 1: Permanently invalidated by issuing College
         Suspended,  // 2: Temporarily inactive (Under institutional investigation)
         Expired     // 3: Passed its validity date
     }
 
     enum AchievementStatus {
-        PendingReview, // 0: Student submitted, pending university review
-        Verified,      // 1: University verified as authentic and legitimate skill
-        Rejected       // 2: University rejected with remarks
+        PendingReview, // 0: Student submitted, pending college review
+        Verified,      // 1: College verified as authentic and legitimate skill
+        Rejected       // 2: College rejected with remarks
     }
 
     // =====================================================
@@ -41,7 +44,8 @@ contract ITHiringMarksVerification {
     struct University {
         uint256 id;
         string name;
-        string universityCode;
+        string universityCode;         // College code (e.g. "RV")
+        string affiliatingUniversity;   // Affiliating university (e.g. "VTU")
         address wallet;
         bool active;
     }
@@ -52,8 +56,8 @@ contract ITHiringMarksVerification {
         string name;
         string course;
         uint16 graduationYear;
-        uint256 percentage;     // Stored as integer (e.g., 85 for 85%)
-        uint256 universityId;
+        bytes32 marksHash;             // Cryptographic hash of marks/percentage (no plaintext on-chain)
+        uint256 universityId;          // College ID to which student is permanently bound
         bool exists;
     }
 
@@ -61,11 +65,11 @@ contract ITHiringMarksVerification {
         uint256 credentialId;
         uint256 studentId;
         uint256 universityId;
-        string documentType;    // "Degree Certificate", "Marksheet", "Academic Transcript", etc.
-        bytes32 documentHash;   // SHA-256 hash of original unencrypted document
-        string ipfsCID;         // IPFS CID where encrypted PDF / marksheet payload is stored
-        uint256 issuedAt;       // Block timestamp
-        uint256 version;        // Credential version (1, 2, ...)
+        string documentType;           // "Degree Certificate", "Marksheet", "Academic Transcript", etc.
+        bytes32 documentHash;          // SHA-256 hash of original unencrypted document
+        string ipfsCID;                // IPFS CID where encrypted PDF / marksheet payload is stored
+        uint256 issuedAt;              // Block timestamp
+        uint256 version;               // Credential version (1, 2, ...)
         CredentialStatus status;
         bool exists;
     }
@@ -75,9 +79,9 @@ contract ITHiringMarksVerification {
         uint256 studentId;
         string title;
         string issuerOrg;
-        string category;        // "Hackathon", "Certification", "Research", "Skill Badge"
-        bytes32 documentHash;   // SHA-256 hash
-        string ipfsCID;         // IPFS CID
+        string category;               // "Hackathon", "Certification", "Research", "Skill Badge"
+        bytes32 documentHash;          // SHA-256 hash
+        string ipfsCID;                // IPFS CID
         uint256 submittedAt;
         uint256 reviewedAt;
         uint256 reviewingUniversityId;
@@ -99,14 +103,14 @@ contract ITHiringMarksVerification {
         uint256 credentialId;
         uint256 companyId;
         string documentType;
-        bool hashMatched;       // True if uploaded hash matches blockchain hash
-        bool verified;          // True if hash matched AND credential Active AND University Active
+        bool hashMatched;              // True if uploaded hash matches blockchain hash
+        bool verified;                 // True if hash matched AND credential Active AND College Active
         uint256 timestamp;
     }
 
     struct AccessRequest {
         uint256 requestId;
-        string entityType;      // "university" or "company"
+        string entityType;             // "university" or "company"
         string name;
         string proposedCode;
         string contactEmail;
@@ -120,6 +124,7 @@ contract ITHiringMarksVerification {
     // =====================================================
 
     address public admin;
+    address public authorizedRelayer;
 
     uint256 private universityCounter;
     uint256 private studentCounter;
@@ -155,13 +160,36 @@ contract ITHiringMarksVerification {
     // EVENTS
     // =====================================================
 
-    event UniversityRegistered(uint256 indexed universityId, string name, string universityCode, address indexed wallet);
+    event AuthorizedRelayerUpdated(address indexed newRelayer);
+
+    event UniversityRegistered(
+        uint256 indexed universityId,
+        string name,
+        string universityCode,
+        string affiliatingUniversity,
+        address indexed wallet
+    );
     event UniversityStatusChanged(uint256 indexed universityId, bool active);
 
     event CompanyRegistered(uint256 indexed companyId, string name, string companyCode, address indexed wallet);
     event CompanyStatusChanged(uint256 indexed companyId, bool active);
 
-    event StudentRegistered(uint256 indexed studentId, string indexed usn, string name, uint256 indexed universityId);
+    event StudentRegistered(
+        uint256 indexed studentId,
+        string indexed usn,
+        string name,
+        uint256 indexed universityId,
+        bytes32 marksHash
+    );
+
+    event StudentMarksUpdated(
+        uint256 indexed studentId,
+        string indexed usn,
+        uint256 indexed universityId,
+        bytes32 oldMarksHash,
+        bytes32 newMarksHash,
+        uint256 timestamp
+    );
 
     event CredentialIssued(
         uint256 indexed credentialId,
@@ -179,7 +207,12 @@ contract ITHiringMarksVerification {
     event CredentialStatusChanged(uint256 indexed credentialId, CredentialStatus newStatus);
 
     event AchievementSubmitted(uint256 indexed achievementId, uint256 indexed studentId, string title);
-    event AchievementReviewed(uint256 indexed achievementId, uint256 indexed universityId, AchievementStatus status, string remarks);
+    event AchievementReviewed(
+        uint256 indexed achievementId,
+        uint256 indexed universityId,
+        AchievementStatus status,
+        string remarks
+    );
 
     event AccessRequested(uint256 indexed requestId, string entityType, string name, string proposedCode);
     event AccessRequestApproved(uint256 indexed requestId, string entityType, uint256 newEntityId);
@@ -203,17 +236,8 @@ contract ITHiringMarksVerification {
         _;
     }
 
-    modifier onlyActiveUniversity() {
-        uint256 uId = universityAddressToId[msg.sender];
-        require(uId != 0, "Auth: Caller is not a registered university");
-        require(universities[uId].active, "Auth: University account is deactivated");
-        _;
-    }
-
-    modifier onlyActiveCompany() {
-        uint256 cId = companyAddressToId[msg.sender];
-        require(cId != 0, "Auth: Caller is not a registered company");
-        require(companies[cId].active, "Auth: Company account is deactivated");
+    modifier onlyAuthorizedRelayer() {
+        require(msg.sender == authorizedRelayer, "Auth: Only authorized relayer allowed");
         _;
     }
 
@@ -223,15 +247,65 @@ contract ITHiringMarksVerification {
 
     constructor() {
         admin = msg.sender;
+        authorizedRelayer = msg.sender;
     }
 
     // =====================================================
-    // 1. UNIVERSITY & INSTITUTION MANAGEMENT (ADMIN ONLY)
+    // RELAYER CONFIGURATION (ADMIN ONLY)
+    // =====================================================
+
+    function setAuthorizedRelayer(address _relayer) external onlyAdmin {
+        require(_relayer != address(0), "Validation: Zero address relayer");
+        authorizedRelayer = _relayer;
+        emit AuthorizedRelayerUpdated(_relayer);
+    }
+
+    // =====================================================
+    // USN FORMAT PARSER & VALIDATOR (PURE SOL)
+    // =====================================================
+
+    /**
+     * @dev Validates USN format: digit, 2-letter college code, 2-digit year, 2-letter branch, 3 digits
+     * e.g. "1RV21CS001" -> extracts college code "RV"
+     */
+    function parseAndValidateUSN(string memory _usn) public pure returns (string memory collegeCode) {
+        bytes memory b = bytes(_usn);
+        require(b.length == 10, "Validation: USN must be exactly 10 characters");
+
+        // Character 0: Digit (0-9)
+        require(b[0] >= 0x30 && b[0] <= 0x39, "Validation: USN prefix must be a digit");
+
+        // Characters 1..2: 2 uppercase letters for College Code (A-Z)
+        require(b[1] >= 0x41 && b[1] <= 0x5A, "Validation: USN college code char 1 must be uppercase letter");
+        require(b[2] >= 0x41 && b[2] <= 0x5A, "Validation: USN college code char 2 must be uppercase letter");
+
+        // Characters 3..4: 2 digits for Admission Year (0-9)
+        require(b[3] >= 0x30 && b[3] <= 0x39, "Validation: USN year char 1 must be a digit");
+        require(b[4] >= 0x30 && b[4] <= 0x39, "Validation: USN year char 2 must be a digit");
+
+        // Characters 5..6: 2 uppercase letters for Branch (A-Z)
+        require(b[5] >= 0x41 && b[5] <= 0x5A, "Validation: USN branch char 1 must be uppercase letter");
+        require(b[6] >= 0x41 && b[6] <= 0x5A, "Validation: USN branch char 2 must be uppercase letter");
+
+        // Characters 7..9: 3 digits for Roll Number (0-9)
+        require(b[7] >= 0x30 && b[7] <= 0x39, "Validation: USN roll number char 1 must be a digit");
+        require(b[8] >= 0x30 && b[8] <= 0x39, "Validation: USN roll number char 2 must be a digit");
+        require(b[9] >= 0x30 && b[9] <= 0x39, "Validation: USN roll number char 3 must be a digit");
+
+        bytes memory codeBytes = new bytes(2);
+        codeBytes[0] = b[1];
+        codeBytes[1] = b[2];
+        return string(codeBytes);
+    }
+
+    // =====================================================
+    // 1. COLLEGE / UNIVERSITY MANAGEMENT (ADMIN ONLY)
     // =====================================================
 
     function registerUniversity(
         string memory _name,
         string memory _universityCode,
+        string memory _affiliatingUniversity,
         address _wallet
     ) public onlyAdmin returns (uint256) {
         require(_wallet != address(0), "Validation: Zero address wallet");
@@ -247,6 +321,7 @@ contract ITHiringMarksVerification {
             id: newId,
             name: _name,
             universityCode: _universityCode,
+            affiliatingUniversity: _affiliatingUniversity,
             wallet: _wallet,
             active: true
         });
@@ -254,8 +329,17 @@ contract ITHiringMarksVerification {
         universityAddressToId[_wallet] = newId;
         universityCodeToId[_universityCode] = newId;
 
-        emit UniversityRegistered(newId, _name, _universityCode, _wallet);
+        emit UniversityRegistered(newId, _name, _universityCode, _affiliatingUniversity, _wallet);
         return newId;
+    }
+
+    // Overload for backward compatibility
+    function registerUniversity(
+        string memory _name,
+        string memory _universityCode,
+        address _wallet
+    ) external onlyAdmin returns (uint256) {
+        return registerUniversity(_name, _universityCode, "VTU", _wallet);
     }
 
     function deactivateUniversity(uint256 _id) external onlyAdmin {
@@ -361,7 +445,7 @@ contract ITHiringMarksVerification {
         uint256 entityId = 0;
 
         if (keccak256(bytes(req.entityType)) == keccak256(bytes("university"))) {
-            entityId = registerUniversity(req.name, req.proposedCode, req.wallet);
+            entityId = registerUniversity(req.name, req.proposedCode, "VTU", req.wallet);
         } else {
             entityId = registerCompany(req.name, req.proposedCode, req.wallet);
         }
@@ -371,50 +455,39 @@ contract ITHiringMarksVerification {
     }
 
     // =====================================================
-    // 4. STUDENT REGISTRATION (UNIVERSITY ONLY OR BY DELEGATION)
+    // 4. STUDENT REGISTRATION (RELAYER ONLY, COLLEGE BINDING)
     // =====================================================
 
+    /**
+     * @dev Registers student bound to a specific college.
+     * Enforces:
+     * - Only authorized relayer can invoke
+     * - USN format valid
+     * - USN college code EQUALS registering college's code
+     * - Stores only cryptographic marksHash on-chain (no plaintext percentage)
+     */
     function registerStudent(
+        uint256 _collegeId,
         string memory _usn,
         string memory _name,
         string memory _course,
         uint16 _graduationYear,
-        uint256 _percentage
-    ) external onlyActiveUniversity returns (uint256) {
-        uint256 uId = universityAddressToId[msg.sender];
-        return _internalRegisterStudent(uId, _usn, _name, _course, _graduationYear, _percentage);
-    }
+        bytes32 _marksHash
+    ) public onlyAuthorizedRelayer returns (uint256) {
+        require(_collegeId > 0 && _collegeId <= universityCounter, "Invalid college ID");
+        require(universities[_collegeId].active, "College inactive");
 
-    function registerStudentByUniversity(
-        uint256 _universityId,
-        string memory _usn,
-        string memory _name,
-        string memory _course,
-        uint16 _graduationYear,
-        uint256 _percentage
-    ) external returns (uint256) {
+        // Verify USN format and extract college code
+        string memory usnCollege = parseAndValidateUSN(_usn);
         require(
-            msg.sender == admin || msg.sender == universities[_universityId].wallet,
-            "Auth: Caller not authorized for this university"
+            keccak256(bytes(usnCollege)) == keccak256(bytes(universities[_collegeId].universityCode)),
+            "Auth: USN college code does not match registering college"
         );
-        require(_universityId > 0 && _universityId <= universityCounter, "Invalid university ID");
-        require(universities[_universityId].active, "University inactive");
 
-        return _internalRegisterStudent(_universityId, _usn, _name, _course, _graduationYear, _percentage);
-    }
-
-    function _internalRegisterStudent(
-        uint256 _uId,
-        string memory _usn,
-        string memory _name,
-        string memory _course,
-        uint16 _graduationYear,
-        uint256 _percentage
-    ) internal returns (uint256) {
         require(bytes(_usn).length > 0, "Validation: USN cannot be empty");
         require(bytes(_name).length > 0, "Validation: Student name cannot be empty");
         require(usnToStudentId[_usn] == 0, "Conflict: USN already registered");
-        require(_percentage <= 100, "Validation: Percentage cannot exceed 100");
+        require(_marksHash != bytes32(0), "Validation: Marks hash cannot be empty");
         require(_graduationYear >= 1990 && _graduationYear <= 2100, "Validation: Invalid graduation year");
 
         studentCounter++;
@@ -426,60 +499,81 @@ contract ITHiringMarksVerification {
             name: _name,
             course: _course,
             graduationYear: _graduationYear,
-            percentage: _percentage,
-            universityId: _uId,
+            marksHash: _marksHash,
+            universityId: _collegeId,
             exists: true
         });
 
         usnToStudentId[_usn] = newStudentId;
 
-        emit StudentRegistered(newStudentId, _usn, _name, _uId);
+        emit StudentRegistered(newStudentId, _usn, _name, _collegeId, _marksHash);
         return newStudentId;
     }
 
+    function registerStudentByUniversity(
+        uint256 _collegeId,
+        string memory _usn,
+        string memory _name,
+        string memory _course,
+        uint16 _graduationYear,
+        bytes32 _marksHash
+    ) external onlyAuthorizedRelayer returns (uint256) {
+        return registerStudent(_collegeId, _usn, _name, _course, _graduationYear, _marksHash);
+    }
+
+    /**
+     * @dev Updates marks hash for an existing registered student when a new version is created.
+     * Reuses existing marksHash storage without data bloat.
+     * Enforces:
+     * - Only authorized relayer can invoke
+     * - College ID matches student's bound universityId
+     * - New marks hash cannot be empty
+     */
+    function updateStudentMarks(
+        uint256 _collegeId,
+        string memory _usn,
+        bytes32 _newMarkHash
+    ) external onlyAuthorizedRelayer returns (bool) {
+        require(_collegeId > 0 && _collegeId <= universityCounter, "Invalid college ID");
+        require(universities[_collegeId].active, "College inactive");
+        uint256 sId = usnToStudentId[_usn];
+        require(sId != 0, "Student not found");
+        require(students[sId].universityId == _collegeId, "Auth: Student belongs to different college");
+        require(_newMarkHash != bytes32(0), "Validation: Marks hash cannot be empty");
+
+        bytes32 oldHash = students[sId].marksHash;
+        students[sId].marksHash = _newMarkHash;
+
+        emit StudentMarksUpdated(sId, _usn, _collegeId, oldHash, _newMarkHash, block.timestamp);
+        return true;
+    }
+
     // =====================================================
-    // 5. CREDENTIAL ISSUANCE & LIFECYCLE (NON-DELETABLE)
+    // 5. CREDENTIAL ISSUANCE & LIFECYCLE (RELAYER ONLY, COLLEGE BINDING)
     // =====================================================
 
+    /**
+     * @dev Issues credential for a student.
+     * Enforces:
+     * - Only authorized relayer can invoke
+     * - Student belongs to the acting college (admin bypass removed)
+     */
     function issueCredential(
+        uint256 _collegeId,
         uint256 _studentId,
         string memory _documentType,
         bytes32 _documentHash,
         string memory _ipfsCID
-    ) external onlyActiveUniversity returns (uint256) {
-        uint256 uId = universityAddressToId[msg.sender];
-        return _internalIssueCredential(uId, _studentId, _documentType, _documentHash, _ipfsCID);
-    }
-
-    function issueCredentialByUniversity(
-        uint256 _universityId,
-        uint256 _studentId,
-        string memory _documentType,
-        bytes32 _documentHash,
-        string memory _ipfsCID
-    ) external returns (uint256) {
-        require(
-            msg.sender == admin || msg.sender == universities[_universityId].wallet,
-            "Auth: Caller not authorized for this university"
-        );
-        require(_universityId > 0 && _universityId <= universityCounter, "Invalid university ID");
-        require(universities[_universityId].active, "University inactive");
-
-        return _internalIssueCredential(_universityId, _studentId, _documentType, _documentHash, _ipfsCID);
-    }
-
-    function _internalIssueCredential(
-        uint256 _uId,
-        uint256 _studentId,
-        string memory _documentType,
-        bytes32 _documentHash,
-        string memory _ipfsCID
-    ) internal returns (uint256) {
+    ) public onlyAuthorizedRelayer returns (uint256) {
+        require(_collegeId > 0 && _collegeId <= universityCounter, "Invalid college ID");
+        require(universities[_collegeId].active, "College inactive");
         require(_studentId > 0 && _studentId <= studentCounter, "Validation: Student does not exist");
         require(bytes(_documentType).length > 0, "Validation: Document type cannot be empty");
         require(_documentHash != bytes32(0), "Validation: Document hash cannot be empty");
         require(bytes(_ipfsCID).length > 0, "Validation: IPFS CID cannot be empty");
-        require(students[_studentId].universityId == _uId, "Auth: Student belongs to different university");
+
+        // CRITICAL CHECK: Student's college MUST match acting college
+        require(students[_studentId].universityId == _collegeId, "Auth: Student belongs to different college");
 
         credentialCounter++;
         uint256 newCredentialId = credentialCounter;
@@ -488,7 +582,7 @@ contract ITHiringMarksVerification {
         credentials[newCredentialId] = Credential({
             credentialId: newCredentialId,
             studentId: _studentId,
-            universityId: _uId,
+            universityId: _collegeId,
             documentType: _documentType,
             documentHash: _documentHash,
             ipfsCID: _ipfsCID,
@@ -503,7 +597,7 @@ contract ITHiringMarksVerification {
         emit CredentialIssued(
             newCredentialId,
             _studentId,
-            _uId,
+            _collegeId,
             _documentType,
             _documentHash,
             _ipfsCID,
@@ -513,44 +607,51 @@ contract ITHiringMarksVerification {
         return newCredentialId;
     }
 
-    function suspendCredential(uint256 _credentialId, string memory _reason) external onlyActiveUniversity {
+    function issueCredentialByUniversity(
+        uint256 _collegeId,
+        uint256 _studentId,
+        string memory _documentType,
+        bytes32 _documentHash,
+        string memory _ipfsCID
+    ) external onlyAuthorizedRelayer returns (uint256) {
+        return issueCredential(_collegeId, _studentId, _documentType, _documentHash, _ipfsCID);
+    }
+
+    function suspendCredential(uint256 _collegeId, uint256 _credentialId, string memory _reason) external onlyAuthorizedRelayer {
         require(_credentialId > 0 && _credentialId <= credentialCounter, "Validation: Credential does not exist");
         Credential storage cred = credentials[_credentialId];
-        uint256 uId = universityAddressToId[msg.sender];
-        require(cred.universityId == uId, "Auth: Only issuing university can suspend");
+        require(cred.universityId == _collegeId, "Auth: Only issuing college can suspend");
         require(cred.status == CredentialStatus.Active, "State: Credential not active");
 
         cred.status = CredentialStatus.Suspended;
-        emit CredentialSuspended(_credentialId, uId, _reason);
+        emit CredentialSuspended(_credentialId, _collegeId, _reason);
         emit CredentialStatusChanged(_credentialId, CredentialStatus.Suspended);
     }
 
-    function reactivateCredential(uint256 _credentialId) external onlyActiveUniversity {
+    function reactivateCredential(uint256 _collegeId, uint256 _credentialId) external onlyAuthorizedRelayer {
         require(_credentialId > 0 && _credentialId <= credentialCounter, "Validation: Credential does not exist");
         Credential storage cred = credentials[_credentialId];
-        uint256 uId = universityAddressToId[msg.sender];
-        require(cred.universityId == uId, "Auth: Only issuing university can reactivate");
+        require(cred.universityId == _collegeId, "Auth: Only issuing college can reactivate");
         require(cred.status == CredentialStatus.Suspended, "State: Credential not suspended");
 
         cred.status = CredentialStatus.Active;
-        emit CredentialReactivated(_credentialId, uId);
+        emit CredentialReactivated(_credentialId, _collegeId);
         emit CredentialStatusChanged(_credentialId, CredentialStatus.Active);
     }
 
-    function revokeCredential(uint256 _credentialId, string memory _reason) external onlyActiveUniversity {
+    function revokeCredential(uint256 _collegeId, uint256 _credentialId, string memory _reason) external onlyAuthorizedRelayer {
         require(_credentialId > 0 && _credentialId <= credentialCounter, "Validation: Credential does not exist");
         Credential storage cred = credentials[_credentialId];
-        uint256 uId = universityAddressToId[msg.sender];
-        require(cred.universityId == uId, "Auth: Only issuing university can revoke");
+        require(cred.universityId == _collegeId, "Auth: Only issuing college can revoke");
         require(cred.status == CredentialStatus.Active || cred.status == CredentialStatus.Suspended, "State: Already revoked");
 
         cred.status = CredentialStatus.Revoked;
-        emit CredentialRevoked(_credentialId, uId, _reason);
+        emit CredentialRevoked(_credentialId, _collegeId, _reason);
         emit CredentialStatusChanged(_credentialId, CredentialStatus.Revoked);
     }
 
     // =====================================================
-    // 6. STUDENT SELF-UPLOADED ACHIEVEMENTS & UNIVERSITY REVIEW
+    // 6. STUDENT SELF-UPLOADED ACHIEVEMENTS & COLLEGE REVIEW
     // =====================================================
 
     function submitAchievement(
@@ -560,7 +661,7 @@ contract ITHiringMarksVerification {
         string memory _category,
         bytes32 _documentHash,
         string memory _ipfsCID
-    ) external returns (uint256) {
+    ) external onlyAuthorizedRelayer returns (uint256) {
         uint256 sId = usnToStudentId[_usn];
         require(sId != 0, "Student not found");
         require(bytes(_title).length > 0, "Title required");
@@ -593,136 +694,32 @@ contract ITHiringMarksVerification {
 
     function reviewAchievement(
         uint256 _achievementId,
-        uint256 _universityId,
+        uint256 _collegeId,
         AchievementStatus _newStatus,
         string memory _remarks
-    ) external {
+    ) external onlyAuthorizedRelayer {
         require(_achievementId > 0 && _achievementId <= achievementCounter, "Invalid achievement ID");
-        require(
-            msg.sender == admin || msg.sender == universities[_universityId].wallet,
-            "Auth: Caller not authorized university"
-        );
+        require(_collegeId > 0 && _collegeId <= universityCounter, "Invalid college ID");
+        require(universities[_collegeId].active, "College inactive");
         require(_newStatus != AchievementStatus.PendingReview, "Must verify or reject");
 
         Achievement storage ach = achievements[_achievementId];
         uint256 sId = ach.studentId;
-        require(students[sId].universityId == _universityId, "Student does not belong to this university");
+
+        // CRITICAL CHECK: Student must belong to the reviewing college
+        require(students[sId].universityId == _collegeId, "Auth: Student belongs to different college");
 
         ach.status = _newStatus;
         ach.reviewedAt = block.timestamp;
-        ach.reviewingUniversityId = _universityId;
+        ach.reviewingUniversityId = _collegeId;
         ach.reviewRemarks = _remarks;
 
-        emit AchievementReviewed(_achievementId, _universityId, _newStatus, _remarks);
+        emit AchievementReviewed(_achievementId, _collegeId, _newStatus, _remarks);
     }
 
     // =====================================================
     // 7. VERIFICATION SYSTEM (COMPANY & PUBLIC AUDIT)
     // =====================================================
-
-    function verifyCredentialQuick(
-        string memory _usn
-    ) external onlyActiveCompany returns (
-        bool isValid,
-        uint256 studentId,
-        uint256 latestCredentialId,
-        string memory documentType,
-        CredentialStatus status
-    ) {
-        studentId = usnToStudentId[_usn];
-        require(studentId != 0, "Verification: Student record not found");
-
-        uint256[] memory credList = studentToCredentials[studentId];
-        require(credList.length > 0, "Verification: No credentials issued");
-
-        latestCredentialId = credList[credList.length - 1];
-        Credential storage cred = credentials[latestCredentialId];
-
-        bool universityIsActive = universities[cred.universityId].active;
-        bool credentialIsActive = (cred.status == CredentialStatus.Active);
-
-        isValid = (universityIsActive && credentialIsActive);
-        documentType = cred.documentType;
-        status = cred.status;
-
-        // Record verification audit
-        verificationCounter++;
-        uint256 cId = companyAddressToId[msg.sender];
-
-        verifications[verificationCounter] = Verification({
-            verificationId: verificationCounter,
-            credentialId: latestCredentialId,
-            companyId: cId,
-            documentType: cred.documentType,
-            hashMatched: true,
-            verified: isValid,
-            timestamp: block.timestamp
-        });
-
-        companyToVerifications[cId].push(verificationCounter);
-        credentialToVerifications[latestCredentialId].push(verificationCounter);
-
-        emit CredentialVerified(
-            verificationCounter,
-            latestCredentialId,
-            cId,
-            cred.documentType,
-            true,
-            isValid,
-            block.timestamp
-        );
-
-        return (isValid, studentId, latestCredentialId, documentType, status);
-    }
-
-    function verifyCredentialWithHash(
-        uint256 _credentialId,
-        bytes32 _uploadedDocHash
-    ) external onlyActiveCompany returns (
-        bool isAuthentic,
-        bool hashMatched,
-        string memory documentType,
-        CredentialStatus status
-    ) {
-        require(_credentialId > 0 && _credentialId <= credentialCounter, "Verification: Credential does not exist");
-        Credential storage cred = credentials[_credentialId];
-
-        uint256 cId = companyAddressToId[msg.sender];
-        hashMatched = (cred.documentHash == _uploadedDocHash);
-
-        bool universityIsActive = universities[cred.universityId].active;
-        bool credentialIsActive = (cred.status == CredentialStatus.Active);
-
-        isAuthentic = (hashMatched && universityIsActive && credentialIsActive);
-        documentType = cred.documentType;
-        status = cred.status;
-
-        verificationCounter++;
-        verifications[verificationCounter] = Verification({
-            verificationId: verificationCounter,
-            credentialId: _credentialId,
-            companyId: cId,
-            documentType: cred.documentType,
-            hashMatched: hashMatched,
-            verified: isAuthentic,
-            timestamp: block.timestamp
-        });
-
-        companyToVerifications[cId].push(verificationCounter);
-        credentialToVerifications[_credentialId].push(verificationCounter);
-
-        emit CredentialVerified(
-            verificationCounter,
-            _credentialId,
-            cId,
-            cred.documentType,
-            hashMatched,
-            isAuthentic,
-            block.timestamp
-        );
-
-        return (isAuthentic, hashMatched, documentType, status);
-    }
 
     function recordVerificationByCompany(
         uint256 _companyId,
@@ -730,11 +727,7 @@ contract ITHiringMarksVerification {
         bool _hashMatched,
         bool _isAuthentic,
         string memory _documentType
-    ) external returns (uint256) {
-        require(
-            msg.sender == admin || msg.sender == companies[_companyId].wallet,
-            "Auth: Caller not authorized company"
-        );
+    ) external onlyAuthorizedRelayer returns (uint256) {
         require(_companyId > 0 && _companyId <= companyCounter, "Invalid company ID");
         require(companies[_companyId].active, "Company inactive");
 
@@ -779,14 +772,14 @@ contract ITHiringMarksVerification {
         string memory name,
         string memory course,
         uint16 graduationYear,
-        uint256 percentage,
+        bytes32 marksHash,
         uint256 universityId,
         bool exists
     ) {
         uint256 sId = usnToStudentId[_usn];
         require(sId != 0, "Student not found");
         Student memory s = students[sId];
-        return (s.id, s.usn, s.name, s.course, s.graduationYear, s.percentage, s.universityId, s.exists);
+        return (s.id, s.usn, s.name, s.course, s.graduationYear, s.marksHash, s.universityId, s.exists);
     }
 
     function getStudentId(string memory _usn) external view returns (uint256) {
@@ -869,12 +862,13 @@ contract ITHiringMarksVerification {
         uint256 id,
         string memory name,
         string memory universityCode,
+        string memory affiliatingUniversity,
         address wallet,
         bool active
     ) {
         require(_id > 0 && _id <= universityCounter, "Invalid university ID");
         University memory u = universities[_id];
-        return (u.id, u.name, u.universityCode, u.wallet, u.active);
+        return (u.id, u.name, u.universityCode, u.affiliatingUniversity, u.wallet, u.active);
     }
 
     function getCompany(uint256 _id) external view returns (

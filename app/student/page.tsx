@@ -46,9 +46,12 @@ import { Credential, Achievement, AchievementStatus, DigiLockerDocument } from "
 import { CandidateSummaryCharts } from "@/components/CandidateSummaryCharts";
 import { RoleGuard } from "@/components/RoleGuard";
 import { useAuth } from "@/context/AuthContext";
+import { ProcessStepper } from "@/components/ProcessStepper";
+import { getStudentStepperState } from "@/lib/stepperEngine";
+import { useVisibilityPolling } from "@/lib/useVisibilityPolling";
 
 export default function StudentPage() {
-  const { studentUSN, entityInfo } = useAuth();
+  const { studentUSN, entityInfo, role, isAuthenticated } = useAuth();
   const [usnInput, setUsnInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -81,6 +84,28 @@ export default function StudentPage() {
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [decryptedFileUrl, setDecryptedFileUrl] = useState<string | null>(null);
   const [decryptionError, setDecryptionError] = useState("");
+
+  // 45-second visibility polling (pauses when hidden, stops on logout)
+  useVisibilityPolling(
+    () => {
+      if (studentUSN) {
+        executeSearch(studentUSN);
+      }
+    },
+    45000,
+    Boolean(isAuthenticated && studentUSN)
+  );
+
+  // Compute Process Stepper State (strictly derives USN from session.studentUSN)
+  const stepperState = getStudentStepperState({
+    student: studentData,
+    achievements,
+    session: {
+      role,
+      studentUSN,
+      account: entityInfo?.wallet || null,
+    },
+  });
 
   const executeSearch = async (targetUsn: string) => {
     if (!targetUsn.trim()) return;
@@ -185,9 +210,11 @@ export default function StudentPage() {
   };
 
   useEffect(() => {
-    const activeUSN = studentUSN || "1RV21CS001";
+    const activeUSN = studentUSN || "";
     setUsnInput(activeUSN);
-    executeSearch(activeUSN);
+    if (activeUSN) {
+      executeSearch(activeUSN);
+    }
   }, [studentUSN]);
 
   const handleSearch = (e: React.FormEvent) => {
@@ -223,10 +250,10 @@ export default function StudentPage() {
     }
   };
 
-  // Submit Achievement Form
+  // Submit Achievement / Certificate Form (Server computes SHA-256 and pins to IPFS)
   const handleSubmitAchievement = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!achFile || !achHash) {
+    if (!achFile) {
       alert("Please upload your certification file");
       return;
     }
@@ -234,45 +261,24 @@ export default function StudentPage() {
     setIsSubmittingAchievement(true);
     setAchSuccessMsg("");
     try {
-      // 1. Upload to Pinata IPFS
-      const { cid } = await uploadToIPFS(achFile);
+      const formData = new FormData();
+      formData.append("file", achFile);
+      formData.append("title", achTitle);
+      formData.append("issuerOrg", achIssuer);
+      formData.append("category", achCategory);
 
-      // 2. Relay on-chain submission to Ethereum
-      await fetch("/api/blockchain/relay", {
+      const res = await fetch("/api/certificates/upload", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "submitAchievement",
-          data: {
-            usn: studentData?.usn || usnInput,
-            title: achTitle,
-            issuerOrg: achIssuer,
-            category: achCategory,
-            documentHash: achHash,
-            ipfsCID: cid,
-          },
-        }),
+        body: formData,
       });
 
-      // 3. Save to Achievements API store
-      await fetch("/api/achievements", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "submit",
-          achievementData: {
-            studentId: studentData?.id || 1,
-            title: achTitle,
-            issuerOrg: achIssuer,
-            category: achCategory,
-            documentHash: achHash,
-            ipfsCID: cid,
-          },
-        }),
-      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to upload certificate");
+      }
 
       setAchSuccessMsg(
-        "Achievement submitted successfully! It has been anchored to Ethereum and sent to your accredited university for legal verification."
+        `Certificate "${achTitle}" uploaded successfully! Document hash: ${data.documentHash ? data.documentHash.slice(0, 16) : ""}... Status: Pending University Endorsement.`
       );
       setAchTitle("");
       setAchIssuer("");
@@ -283,7 +289,7 @@ export default function StudentPage() {
         await fetchAchievements(studentData.id);
       }
     } catch (err: any) {
-      alert("Error submitting achievement: " + err.message);
+      alert("Error submitting certificate: " + err.message);
     } finally {
       setIsSubmittingAchievement(false);
     }
@@ -345,6 +351,12 @@ export default function StudentPage() {
       portalName="Student Digital Credential Locker"
     >
       <div className="max-w-6xl mx-auto space-y-8 rounded-3xl p-2 sm:p-4 bg-gradient-to-b from-indigo-950/20 via-slate-950/60 to-slate-950">
+        {/* Workflow Process Stepper */}
+        <ProcessStepper
+          state={stepperState}
+          onAction={() => setShowAchModal(true)}
+        />
+
         {/* Header */}
         <div className="text-center space-y-3">
           <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs font-semibold uppercase tracking-wider">
@@ -447,6 +459,15 @@ export default function StudentPage() {
               <span className="text-xs uppercase font-bold text-slate-400">Cumulative Grade</span>
               <span className="text-4xl font-extrabold text-emerald-400">{studentData.percentage}%</span>
               <span className="text-[11px] text-slate-400">Non-Deletable Ledger Record</span>
+              <a
+                href="/api/reports/download"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 shadow-md shadow-indigo-600/25 transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download Official Report (PDF)</span>
+              </a>
             </div>
           </div>
         )}

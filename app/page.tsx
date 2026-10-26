@@ -187,9 +187,11 @@ export default function StudentPage() {
   };
 
   useEffect(() => {
-    const activeUSN = studentUSN || "1RV21CS001";
+    const activeUSN = studentUSN || "";
     setUsnInput(activeUSN);
-    executeSearch(activeUSN);
+    if (activeUSN) {
+      executeSearch(activeUSN);
+    }
   }, [studentUSN]);
 
   const handleSearch = (e: React.FormEvent) => {

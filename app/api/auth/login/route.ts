@@ -9,9 +9,16 @@ import {
   createSessionJWT,
   setSessionCookie,
   SessionPayload,
+  getStudentRegisteredEmail,
 } from "@/lib/serverAuth";
 import { verifyEntityAccessCode } from "@/lib/accessCodeStore";
 import { getReadOnlyServerContract } from "@/lib/serverContract";
+import {
+  getStudentLinkedWallet,
+  linkStudentWallet,
+  findStudentByWallet,
+} from "@/lib/studentWalletStore";
+import { sendStudentOTPEmail } from "@/lib/emailService";
 
 export async function POST(req: NextRequest) {
   const ip =
@@ -34,7 +41,7 @@ export async function POST(req: NextRequest) {
     } = body;
 
     const rateLimitKey = `${ip}:${codeIdentifier || wallet || usn || "global"}`;
-    const rateCheck = checkRateLimit(rateLimitKey);
+    const rateCheck = await checkRateLimit(rateLimitKey);
 
     if (!rateCheck.allowed) {
       return NextResponse.json(
@@ -51,7 +58,7 @@ export async function POST(req: NextRequest) {
     const contract = getReadOnlyServerContract();
 
     // -------------------------------------------------------------------------
-    // 0. STUDENT OTP REQUEST (Generate & Dispatch 6-digit OTP)
+    // 0. STUDENT OTP REQUEST (Generate & Dispatch 6-Digit OTP via Registered Email)
     // -------------------------------------------------------------------------
     if (loginType === "student_request_otp") {
       if (!usn) {
@@ -62,7 +69,7 @@ export async function POST(req: NextRequest) {
       try {
         const s = await contract.getStudentByUSN(cleanUSN);
         if (!s || !s.exists) {
-          const attempt = recordFailedAttempt(rateLimitKey);
+          const attempt = await recordFailedAttempt(rateLimitKey);
           return NextResponse.json(
             {
               error: `Student USN "${cleanUSN}" was not found on the blockchain registry.`,
@@ -72,18 +79,31 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        const { otp: generatedOtp } = generateStudentOTP(cleanUSN);
-        console.log(
-          `[AUTH OTP DISPATCH] Verification code for student ${cleanUSN} (${s.name}): ${generatedOtp}`
-        );
+        // Fetch university-registered email from database (NEVER trust client body email)
+        const registeredEmail = await getStudentRegisteredEmail(cleanUSN);
+        const recipientEmail =
+          registeredEmail || `${cleanUSN.toLowerCase()}@student.verichain.network`;
+
+        const { otp: generatedOtp } = await generateStudentOTP(cleanUSN);
+
+        await sendStudentOTPEmail({
+          to: recipientEmail,
+          usn: cleanUSN,
+          studentName: s.name,
+          otp: generatedOtp,
+        });
+
+        const isDev = process.env.NODE_ENV !== "production";
+        const linkedWallet = await getStudentLinkedWallet(cleanUSN);
 
         return NextResponse.json({
           success: true,
-          message: `6-digit security OTP sent to student's registered institutional email for ${cleanUSN}.`,
-          devOTP: process.env.NODE_ENV !== "production" ? generatedOtp : undefined,
+          message: `6-digit security OTP sent to student's registered email (${recipientEmail}).`,
+          devOTP: isDev ? generatedOtp : undefined,
+          isWalletLinked: Boolean(linkedWallet),
         });
       } catch (err: any) {
-        const attempt = recordFailedAttempt(rateLimitKey);
+        const attempt = await recordFailedAttempt(rateLimitKey);
         return NextResponse.json(
           {
             error: err.reason || err.message || `Student USN "${cleanUSN}" not found on blockchain.`,
@@ -95,7 +115,72 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------------------------------
-    // 1. INSTITUTIONAL ACCESS CODE LOGIN (University / Company)
+    // 1. STUDENT WALLET LINKING (Link Verified MetaMask Wallet to USN)
+    // -------------------------------------------------------------------------
+    else if (loginType === "student_link_wallet") {
+      if (!usn || !otp || !wallet || !message || !signature) {
+        return NextResponse.json(
+          { error: "USN, 6-digit Email OTP, wallet address, and SIWE signature are all required to link wallet." },
+          { status: 400 }
+        );
+      }
+
+      const cleanUSN = usn.trim().toUpperCase();
+      const otpResult = await verifyStudentOTP(cleanUSN, otp);
+      if (!otpResult.valid) {
+        const attempt = await recordFailedAttempt(rateLimitKey);
+        return NextResponse.json(
+          {
+            error: otpResult.error || "OTP verification failed.",
+            remainingAttempts: otpResult.remainingAttempts ?? attempt.remainingAttempts,
+            invalidated: otpResult.invalidated,
+          },
+          { status: 401 }
+        );
+      }
+
+      const isValidSig = await verifyWalletSignature(wallet, message, signature);
+      if (!isValidSig) {
+        const attempt = await recordFailedAttempt(rateLimitKey);
+        return NextResponse.json(
+          {
+            error: "Cryptographic signature verification failed for wallet linking.",
+            remainingAttempts: attempt.remainingAttempts,
+          },
+          { status: 401 }
+        );
+      }
+
+      // Check if wallet is already bound to another student
+      const existingUsn = await findStudentByWallet(wallet);
+      if (existingUsn && existingUsn.toUpperCase() !== cleanUSN) {
+        return NextResponse.json(
+          { error: `This wallet address is already linked to another student (${existingUsn}).` },
+          { status: 409 }
+        );
+      }
+
+      await linkStudentWallet(cleanUSN, wallet);
+
+      const s = await contract.getStudentByUSN(cleanUSN);
+      sessionPayload = {
+        role: "student",
+        account: wallet,
+        studentUSN: cleanUSN,
+        entityInfo: {
+          id: Number(s.id),
+          name: s.name,
+          code: cleanUSN,
+          course: s.course,
+          gradYear: Number(s.graduationYear),
+          percentage: Number(s.percentage),
+          wallet: wallet,
+        },
+      };
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. INSTITUTIONAL ACCESS CODE LOGIN (University / Company)
     // -------------------------------------------------------------------------
     else if (loginType === "code") {
       if (!codeIdentifier && !accessCode) {
@@ -105,14 +190,14 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const verifiedRecord = verifyEntityAccessCode(
+      const verifiedRecord = await verifyEntityAccessCode(
         entityType || "university",
         codeIdentifier || "",
         accessCode || ""
       );
 
       if (!verifiedRecord) {
-        const attempt = recordFailedAttempt(rateLimitKey);
+        const attempt = await recordFailedAttempt(rateLimitKey);
         return NextResponse.json(
           {
             error: `Invalid access credentials. ${attempt.remainingAttempts} attempts remaining before temporary lockout.`,
@@ -122,7 +207,6 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Check on-chain active status
       if (entityType === "university") {
         const u = await contract.getUniversity(verifiedRecord.entityId);
         if (!u.active) {
@@ -132,10 +216,9 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        // SIWE wallet verification if wallet signature is attached
         if (signature && message && wallet) {
-          if (!verifyWalletSignature(wallet, message, signature)) {
-            const attempt = recordFailedAttempt(rateLimitKey);
+          if (!(await verifyWalletSignature(wallet, message, signature))) {
+            const attempt = await recordFailedAttempt(rateLimitKey);
             return NextResponse.json(
               {
                 error: "Invalid cryptographic wallet signature.",
@@ -167,8 +250,8 @@ export async function POST(req: NextRequest) {
         }
 
         if (signature && message && wallet) {
-          if (!verifyWalletSignature(wallet, message, signature)) {
-            const attempt = recordFailedAttempt(rateLimitKey);
+          if (!(await verifyWalletSignature(wallet, message, signature))) {
+            const attempt = await recordFailedAttempt(rateLimitKey);
             return NextResponse.json(
               {
                 error: "Invalid cryptographic wallet signature.",
@@ -194,7 +277,7 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------------------------------
-    // 2. SIWE CRYPTOGRAPHIC WALLET LOGIN (MetaMask)
+    // 3. SIWE CRYPTOGRAPHIC WALLET LOGIN (Admin / University / Company)
     // -------------------------------------------------------------------------
     else if (loginType === "wallet") {
       if (!wallet || !message || !signature) {
@@ -204,9 +287,9 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const isValidSig = verifyWalletSignature(wallet, message, signature);
+      const isValidSig = await verifyWalletSignature(wallet, message, signature);
       if (!isValidSig) {
-        const attempt = recordFailedAttempt(rateLimitKey);
+        const attempt = await recordFailedAttempt(rateLimitKey);
         return NextResponse.json(
           {
             error: "Cryptographic signature verification failed. Nonce may have expired, been replayed, or signature is invalid.",
@@ -235,7 +318,6 @@ export async function POST(req: NextRequest) {
       } catch {}
 
       if (!sessionPayload) {
-        // Check University wallet mapping
         const uId = Number(await contract.universityAddressToId(wallet));
         if (uId > 0) {
           const u = await contract.getUniversity(uId);
@@ -260,7 +342,6 @@ export async function POST(req: NextRequest) {
       }
 
       if (!sessionPayload) {
-        // Check Company wallet mapping
         const cId = Number(await contract.companyAddressToId(wallet));
         if (cId > 0) {
           const c = await contract.getCompany(cId);
@@ -285,7 +366,7 @@ export async function POST(req: NextRequest) {
       }
 
       if (!sessionPayload) {
-        const attempt = recordFailedAttempt(rateLimitKey);
+        const attempt = await recordFailedAttempt(rateLimitKey);
         return NextResponse.json(
           {
             error: `Wallet (${wallet.slice(0, 6)}...${wallet.slice(-4)}) is not registered as an authorized entity on the blockchain.`,
@@ -297,7 +378,7 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------------------------------
-    // 3. CANDIDATE STUDENT LOGIN (Requires Email OTP OR Wallet SIWE Signature)
+    // 4. CANDIDATE STUDENT LOGIN (Requires Email OTP OR Linked Wallet SIWE)
     // -------------------------------------------------------------------------
     else if (loginType === "student") {
       if (!usn) {
@@ -306,23 +387,49 @@ export async function POST(req: NextRequest) {
 
       const cleanUSN = usn.trim().toUpperCase();
 
-      // Enforce: USN alone is NOT permitted. Must have OTP or SIWE wallet signature
+      // Path A: Authenticate with 6-Digit Email OTP
       if (otp) {
-        const isOtpValid = verifyStudentOTP(cleanUSN, otp);
-        if (!isOtpValid) {
-          const attempt = recordFailedAttempt(rateLimitKey);
+        const otpResult = await verifyStudentOTP(cleanUSN, otp);
+        if (!otpResult.valid) {
+          const attempt = await recordFailedAttempt(rateLimitKey);
           return NextResponse.json(
             {
-              error: "Invalid or expired 6-digit OTP. Please request a new verification code.",
+              error: otpResult.error || "Invalid or expired OTP.",
+              remainingAttempts: otpResult.remainingAttempts ?? attempt.remainingAttempts,
+              invalidated: otpResult.invalidated,
+            },
+            { status: 401 }
+          );
+        }
+      }
+      // Path B: Authenticate with Web3 Wallet SIWE Signature (Enforce Verified Linkage)
+      else if (wallet && message && signature) {
+        const linkedWallet = await getStudentLinkedWallet(cleanUSN);
+
+        if (!linkedWallet) {
+          return NextResponse.json(
+            {
+              error: `No Web3 wallet has been linked to student USN "${cleanUSN}" yet. Please sign in with Email OTP first to link your wallet.`,
+              requiresOtpLink: true,
+            },
+            { status: 401 }
+          );
+        }
+
+        if (linkedWallet.toLowerCase() !== wallet.trim().toLowerCase()) {
+          const attempt = await recordFailedAttempt(rateLimitKey);
+          return NextResponse.json(
+            {
+              error: `Unauthorized: Wallet (${wallet.slice(0, 6)}...${wallet.slice(-4)}) is not linked to USN ${cleanUSN}. Access denied.`,
               remainingAttempts: attempt.remainingAttempts,
             },
             { status: 401 }
           );
         }
-      } else if (wallet && message && signature) {
-        const isSigValid = verifyWalletSignature(wallet, message, signature);
+
+        const isSigValid = await verifyWalletSignature(wallet, message, signature);
         if (!isSigValid) {
-          const attempt = recordFailedAttempt(rateLimitKey);
+          const attempt = await recordFailedAttempt(rateLimitKey);
           return NextResponse.json(
             {
               error: "Invalid cryptographic wallet signature.",
@@ -335,7 +442,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           {
             error:
-              "Unauthorized: Student login requires a 6-digit Email OTP or verified Web3 wallet signature. USN alone is not permitted.",
+              "Unauthorized: Student login requires a 6-digit Email OTP or verified Web3 wallet signature. USN alone is strictly prohibited.",
           },
           { status: 401 }
         );
@@ -344,7 +451,7 @@ export async function POST(req: NextRequest) {
       try {
         const s = await contract.getStudentByUSN(cleanUSN);
         if (!s || !s.exists) {
-          const attempt = recordFailedAttempt(rateLimitKey);
+          const attempt = await recordFailedAttempt(rateLimitKey);
           return NextResponse.json(
             {
               error: `Student USN "${cleanUSN}" was not found on the blockchain registry.`,
@@ -354,9 +461,10 @@ export async function POST(req: NextRequest) {
           );
         }
 
+        const linkedWalletAddr = await getStudentLinkedWallet(cleanUSN);
         sessionPayload = {
           role: "student",
-          account: wallet || null,
+          account: wallet || linkedWalletAddr || null,
           studentUSN: cleanUSN,
           entityInfo: {
             id: Number(s.id),
@@ -365,10 +473,11 @@ export async function POST(req: NextRequest) {
             course: s.course,
             gradYear: Number(s.graduationYear),
             percentage: Number(s.percentage),
+            wallet: wallet || linkedWalletAddr || undefined,
           },
         };
       } catch (err: any) {
-        const attempt = recordFailedAttempt(rateLimitKey);
+        const attempt = await recordFailedAttempt(rateLimitKey);
         return NextResponse.json(
           {
             error: err.reason || err.message || `Student USN "${cleanUSN}" not found on blockchain.`,
@@ -385,10 +494,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Authentication failed." }, { status: 401 });
     }
 
-    // Reset failed rate limit counter on successful authentication
-    resetFailedAttempts(rateLimitKey);
+    await resetFailedAttempts(rateLimitKey);
 
-    // Issue signed httpOnly JWT session cookie
     const token = await createSessionJWT(sessionPayload);
     const response = NextResponse.json({
       success: true,

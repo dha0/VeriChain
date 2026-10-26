@@ -1,148 +1,108 @@
-import fs from "fs";
-import path from "path";
-import os from "os";
 import bcrypt from "bcryptjs";
 import { ethers } from "ethers";
+import { prisma } from "@/lib/prisma";
 
 export interface EntityCredentialRecord {
   entityType: "university" | "company";
   entityId: number;
-  codeIdentifier: string; // Public identifier / abbreviation (e.g. "VTU-KA-001", "CIT")
+  codeIdentifier: string; // Public identifier / abbreviation (e.g. "UNIV-001")
   name: string;
   wallet: string;
-  hashedCode: string; // Salted bcrypt hash of the secret access code
+  hashedCode: string; // Salted bcrypt hash
   createdAt: number;
-}
-
-const CWD_FILE = path.join(process.cwd(), ".access_credentials.json");
-const TMP_FILE = path.join(os.tmpdir(), "access_credentials.json");
-
-declare global {
-  var __accessCredentialsCache: EntityCredentialRecord[] | undefined;
-}
-
-function readRecords(): EntityCredentialRecord[] {
-  if (global.__accessCredentialsCache && Array.isArray(global.__accessCredentialsCache)) {
-    return global.__accessCredentialsCache;
-  }
-
-  // 1. Check /tmp
-  try {
-    if (fs.existsSync(TMP_FILE)) {
-      const content = fs.readFileSync(TMP_FILE, "utf-8");
-      const parsed = JSON.parse(content);
-      if (Array.isArray(parsed)) {
-        global.__accessCredentialsCache = parsed;
-        return parsed;
-      }
-    }
-  } catch {}
-
-  // 2. Check project root file
-  try {
-    if (fs.existsSync(CWD_FILE)) {
-      const content = fs.readFileSync(CWD_FILE, "utf-8");
-      const parsed = JSON.parse(content);
-      if (Array.isArray(parsed)) {
-        global.__accessCredentialsCache = parsed;
-        return parsed;
-      }
-    }
-  } catch {}
-
-  global.__accessCredentialsCache = [];
-  return [];
-}
-
-function writeRecords(data: EntityCredentialRecord[]) {
-  global.__accessCredentialsCache = data;
-  try {
-    fs.writeFileSync(TMP_FILE, JSON.stringify(data, null, 2));
-  } catch {}
-  try {
-    fs.writeFileSync(CWD_FILE, JSON.stringify(data, null, 2));
-  } catch {}
 }
 
 /**
  * Generates a high-entropy random access code, salts and hashes it with bcrypt,
- * and saves only the hash. Returns the plain text code ONCE to display to the user.
+ * and saves only the hash to PostgreSQL database via Prisma. Returns plain text code ONCE.
  */
-export function generateAndStoreAccessCode(
+export async function generateAndStoreAccessCode(
   entityType: "university" | "company",
   entityId: number,
   codeIdentifier: string,
   name: string,
   wallet: string
-): string {
-  const records = readRecords();
+): Promise<string> {
   const cleanId = codeIdentifier.trim().toUpperCase();
 
-  // Generate random 16-byte hex secret: e.g. "AUTH-UNI-7f8a9b2c3d4e5f6a"
   const prefix = entityType === "university" ? "UNI-SEC" : "REC-SEC";
   const randomToken = ethers.hexlify(ethers.randomBytes(8)).replace("0x", "").toUpperCase();
   const plainSecretCode = `${prefix}-${cleanId}-${randomToken}`;
 
   const hashedCode = bcrypt.hashSync(plainSecretCode, 10);
 
-  const newRecord: EntityCredentialRecord = {
-    entityType,
-    entityId,
-    codeIdentifier: cleanId,
-    name: name.trim(),
-    wallet: wallet.trim(),
-    hashedCode,
-    createdAt: Date.now(),
-  };
+  await prisma.institutionCredential.upsert({
+    where: {
+      entityType_codeIdentifier: {
+        entityType,
+        codeIdentifier: cleanId,
+      },
+    },
+    update: {
+      entityId,
+      name: name.trim(),
+      wallet: wallet.trim(),
+      hashedCode,
+    },
+    create: {
+      entityType,
+      entityId,
+      codeIdentifier: cleanId,
+      name: name.trim(),
+      wallet: wallet.trim(),
+      hashedCode,
+    },
+  });
 
-  const existingIdx = records.findIndex(
-    (r) => r.codeIdentifier.toUpperCase() === cleanId && r.entityType === entityType
-  );
-
-  if (existingIdx >= 0) {
-    records[existingIdx] = newRecord;
-  } else {
-    records.push(newRecord);
-  }
-
-  writeRecords(records);
-  return plainSecretCode; // Return plain text ONCE
+  return plainSecretCode;
 }
 
+// Standard precomputed bcrypt hash (cost 10) for timing-attack mitigation
+const DUMMY_BCRYPT_HASH = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
+
 /**
- * Verifies a provided access code against the stored bcrypt hash on the server.
- * Supports verifying with codeIdentifier + accessCode, or checking accessCode across records.
+ * Verifies a provided access code against the stored bcrypt hash in PostgreSQL.
+ * Requires codeIdentifier to look up a single record via unique index.
+ * Uses async bcrypt.compare and performs a dummy comparison if no record exists
+ * so timing attacks cannot reveal valid institutional identifiers.
  */
-export function verifyEntityAccessCode(
+export async function verifyEntityAccessCode(
   entityType: "university" | "company",
   codeIdentifier: string,
   providedAccessCode: string
-): EntityCredentialRecord | null {
-  const records = readRecords();
+): Promise<EntityCredentialRecord | null> {
   const cleanId = (codeIdentifier || "").trim().toUpperCase();
   const cleanPass = (providedAccessCode || "").trim();
 
-  // Case 1: Both code identifier and secret passkey are provided
-  if (cleanId && cleanPass) {
-    const record = records.find(
-      (r) => r.codeIdentifier.toUpperCase() === cleanId && r.entityType === entityType
-    );
-    if (record) {
-      const isMatch = bcrypt.compareSync(cleanPass, record.hashedCode);
-      if (isMatch) return record;
-    }
+  // Code identifier is strictly required for indexed lookup
+  if (!cleanId) {
+    await bcrypt.compare(cleanPass || "dummy", DUMMY_BCRYPT_HASH);
+    return null;
   }
 
-  // Case 2: Only one credential string provided (check if it matches any bcrypt hash for this entityType)
-  const singleInput = cleanPass || cleanId;
-  if (singleInput) {
-    for (const r of records) {
-      if (r.entityType === entityType) {
-        if (bcrypt.compareSync(singleInput, r.hashedCode)) {
-          return r;
-        }
-      }
-    }
+  const record = await prisma.institutionCredential.findUnique({
+    where: {
+      entityType_codeIdentifier: {
+        entityType,
+        codeIdentifier: cleanId,
+      },
+    },
+  });
+
+  // Run dummy comparison if record does not exist to ensure constant response time
+  const targetHash = record ? record.hashedCode : DUMMY_BCRYPT_HASH;
+  const isMatch = await bcrypt.compare(cleanPass || "dummy", targetHash);
+
+  if (record && isMatch) {
+    return {
+      entityType: record.entityType as "university" | "company",
+      entityId: record.entityId,
+      codeIdentifier: record.codeIdentifier,
+      name: record.name,
+      wallet: record.wallet,
+      hashedCode: record.hashedCode,
+      createdAt: record.createdAt.getTime(),
+    };
   }
 
   return null;

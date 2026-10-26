@@ -32,7 +32,7 @@ import {
   Eye,
   Sparkles,
 } from "lucide-react";
-import * as XLSX from "xlsx";
+import { parseAndValidateUSN } from "@/lib/usnParser";
 import {
   generateMarksheetPDF,
   downloadPDFFile,
@@ -59,13 +59,16 @@ import {
 import { StatusBadge } from "@/components/StatusBadge";
 import { RoleGuard } from "@/components/RoleGuard";
 import { useAuth } from "@/context/AuthContext";
+import { ProcessStepper } from "@/components/ProcessStepper";
+import { getCollegeStepperState } from "@/lib/stepperEngine";
+import { useVisibilityPolling } from "@/lib/useVisibilityPolling";
 
-type ActiveTab = "single" | "generate" | "bulk" | "achievements" | "credentials";
+type ActiveTab = "single" | "generate" | "bulk" | "achievements" | "credentials" | "history";
 
 export default function UniversityPage() {
-  const { entityInfo } = useAuth();
-  const currentUnivCode = entityInfo?.code || "VTU-KA-001";
-  const currentUnivName = entityInfo?.name || "Visvesvaraya Technological University";
+  const { entityInfo, isAuthenticated } = useAuth();
+  const currentUnivCode = entityInfo?.code || "";
+  const currentUnivName = entityInfo?.name || "University Authority";
 
   const [activeTab, setActiveTab] = useState<ActiveTab>("single");
   const [universityId, setUniversityId] = useState<number>(1);
@@ -75,9 +78,17 @@ export default function UniversityPage() {
     type: "success" | "error" | "info";
   } | null>(null);
 
+  // Phase 5 Student History States
+  const [historyStudents, setHistoryStudents] = useState<any[]>([]);
+  const [historySearchUsn, setHistorySearchUsn] = useState("");
+  const [selectedHistoryStudent, setSelectedHistoryStudent] = useState<any | null>(null);
+  const [historyVersions, setHistoryVersions] = useState<any[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+
   // Student Registration Form States
   const [usn, setUsn] = useState("");
   const [studentName, setStudentName] = useState("");
+  const [studentEmail, setStudentEmail] = useState("");
   const [course, setCourse] = useState("Computer Science & Engineering");
   const [gradYear, setGradYear] = useState(2026);
   const [percentage, setPercentage] = useState(85);
@@ -117,20 +128,32 @@ export default function UniversityPage() {
     usn: string;
   } | null>(null);
 
-  // Bulk CSV/Excel Upload States
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [csvParsedRows, setCsvParsedRows] = useState<CSVStudentRow[]>([]);
-  const [isProcessingBulk, setIsProcessingBulk] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
-  const [bulkResults, setBulkResults] = useState<{
+  // Phase 4 Multi-Format Student Onboarding States
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [previewSummary, setPreviewSummary] = useState<{
+    totalRows: number;
+    totalStudents: number;
+    validCount: number;
+    warningCount: number;
+    errorCount: number;
+    duplicateCount: number;
+  } | null>(null);
+  const [previewRows, setPreviewRows] = useState<any[]>([]);
+  const [isConfirmingBulk, setIsConfirmingBulk] = useState(false);
+  const [confirmProgress, setConfirmProgress] = useState<{
+    current: number;
+    total: number;
+    currentUsn: string;
+  } | null>(null);
+  const [confirmResults, setConfirmResults] = useState<{
+    rowId?: string;
     usn: string;
-    name: string;
-    studentId: number;
-    credentialId?: number;
-    cid?: string;
-    status: "success" | "error";
+    success: boolean;
+    studentId?: number;
+    txHash?: string;
     error?: string;
-    pdfBytes?: Uint8Array;
+    version?: number;
   }[]>([]);
 
   // Student Achievements Review State
@@ -254,7 +277,7 @@ export default function UniversityPage() {
         body: JSON.stringify({
           action: "registerStudent",
           universityCode: currentUnivCode,
-          data: { usn, name: studentName, course, gradYear, percentage },
+          data: { usn, name: studentName, email: studentEmail, course, gradYear, percentage },
         }),
       });
 
@@ -267,6 +290,7 @@ export default function UniversityPage() {
       });
       setUsn("");
       setStudentName("");
+      setStudentEmail("");
       await loadUniversityData();
     } catch (err: any) {
       setStatusMessage({
@@ -355,84 +379,157 @@ export default function UniversityPage() {
   };
 
   // CSV / Excel Template Downloader
-  const downloadCsvTemplate = () => {
-    const csvContent =
-      "usn,name,course,graduationYear,percentage,documentType,gradeRemark\n" +
-      "1RV21CS002,Priya Nair,Computer Science & Engineering,2025,91,Degree Certificate,First Class with Distinction\n" +
-      "1RV21CS003,Aditya Verma,Information Science & Engineering,2025,87,Academic Marksheet,First Class Honors\n" +
-      "1RV21CS004,Sneha Kulkarni,Artificial Intelligence & Machine Learning,2025,94,Consolidated Transcript,University Gold Medalist\n";
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", "student_bulk_upload_template.csv");
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  // 1. Template Downloader (Blank with official headers only, no demo data)
+  const downloadTemplate = (format: "csv" | "xlsx") => {
+    window.location.href = `/api/students/template?format=${format}`;
   };
 
-  // Parse CSV or Excel (.xlsx, .xls) File Client-Side using SheetJS
-  const handleCsvFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // 2. Client-Side File Validation & Server Preview Trigger
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      setCsvFile(file);
-      setBulkResults([]);
+      if (file.size > 5 * 1024 * 1024) {
+        setStatusMessage({
+          text: `File Size Error: File (${(file.size / (1024 * 1024)).toFixed(2)} MB) exceeds the maximum allowed 5 MB limit.`,
+          type: "error",
+        });
+        return;
+      }
+
+      setUploadFile(file);
+      setIsPreviewLoading(true);
+      setStatusMessage({
+        text: `Parsing and validating ${file.name} on server...`,
+        type: "info",
+      });
 
       try {
-        const buffer = await file.arrayBuffer();
-        const wb = XLSX.read(buffer, { type: "array" });
-        const firstSheetName = wb.SheetNames[0];
-        const rawJson: any[] = XLSX.utils.sheet_to_json(wb.Sheets[firstSheetName]);
+        const formData = new FormData();
+        formData.append("file", file);
 
-        const rows: CSVStudentRow[] = rawJson
-          .map((row: any) => {
-            const keys = Object.keys(row);
-            const getVal = (target: string) => {
-              const foundKey = keys.find((k) => k.trim().toLowerCase() === target.toLowerCase());
-              return foundKey !== undefined ? row[foundKey] : undefined;
-            };
+        const res = await fetch("/api/students/upload/preview", {
+          method: "POST",
+          body: formData,
+        });
 
-            const usnVal = String(getVal("usn") || getVal("seatno") || getVal("rollno") || "").trim();
-            const nameVal = String(getVal("name") || getVal("studentname") || getVal("candidatename") || "").trim();
-            const courseVal = String(
-              getVal("course") || getVal("branch") || getVal("program") || "Computer Science & Engineering"
-            ).trim();
-            const gradYearVal =
-              parseInt(String(getVal("graduationyear") || getVal("gradyear") || getVal("batch") || 2026)) || 2026;
-            const pctVal =
-              parseFloat(String(getVal("percentage") || getVal("marks") || getVal("score") || 85)) || 85;
-            const docTypeVal = String(getVal("documenttype") || getVal("doctype") || "Academic Marksheet").trim();
-            const remarkVal = String(
-              getVal("graderemark") ||
-                getVal("remark") ||
-                getVal("distinction") ||
-                (pctVal >= 75 ? "First Class with Distinction" : "First Class")
-            ).trim();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to parse file preview.");
 
-            return {
-              usn: usnVal,
-              name: nameVal,
-              course: courseVal,
-              gradYear: gradYearVal,
-              graduationYear: gradYearVal,
-              percentage: pctVal,
-              documentType: docTypeVal,
-              gradeRemark: remarkVal,
-            };
-          })
-          .filter((r) => r.usn && r.name);
-
-        if (rows.length === 0) {
-          alert("No valid student rows found. Please check columns: usn, name, course, graduationYear, percentage");
-          return;
-        }
-
-        setCsvParsedRows(rows);
+        setPreviewSummary(data.summary);
+        setPreviewRows(data.rows || []);
+        setConfirmResults([]);
+        setStatusMessage({
+          text: `Parsed ${data.summary.totalStudents} student records from ${file.name}! Review and edit values below before confirming.`,
+          type: data.summary.errorCount > 0 ? "error" : data.summary.warningCount > 0 ? "info" : "success",
+        });
       } catch (err: any) {
-        alert("Failed to parse spreadsheet: " + err.message);
+        setStatusMessage({
+          text: err.message || "Failed to parse uploaded file.",
+          type: "error",
+        });
+      } finally {
+        setIsPreviewLoading(false);
       }
     }
+  };
+
+  // 3. In-table cell editing so college can correct typos directly in the preview
+  const handleCellEdit = (rowId: string, field: string, value: any) => {
+    setPreviewRows((prev) =>
+      prev.map((r) => {
+        if (r.rowId !== rowId) return r;
+        const updated = { ...r, [field]: value };
+        if (field === "usn") {
+          const cleanUsn = String(value || "").trim().toUpperCase();
+          const parsed = parseAndValidateUSN(cleanUsn);
+          const errors = [...r.errorMessages].filter(
+            (errText: string) => !errText.includes("USN") && !errText.includes("Cross-College")
+          );
+          if (!parsed.valid) {
+            errors.push(`Invalid USN: ${parsed.error}`);
+          } else if (parsed.collegeCode !== currentUnivCode.toUpperCase()) {
+            errors.push(`Cross-College: USN belongs to '${parsed.collegeCode}', not '${currentUnivCode}'.`);
+          }
+          updated.errorMessages = errors;
+          updated.status = errors.length > 0 ? "error" : updated.isAlreadyRegistered ? "warning" : "valid";
+        }
+        return updated;
+      })
+    );
+  };
+
+  // 4. Confirm & Register rows one-by-one with progress bar & error isolation
+  const handleConfirmBatch = async (onlyFailed = false) => {
+    const rowsToProcess = onlyFailed
+      ? previewRows.filter((r) => {
+          const res = confirmResults.find((cr) => cr.usn === r.usn);
+          return res && !res.success && r.status !== "error";
+        })
+      : previewRows.filter((r) => r.status !== "error");
+
+    if (rowsToProcess.length === 0) {
+      setStatusMessage({ text: "No valid rows ready for registration.", type: "error" });
+      return;
+    }
+
+    setIsConfirmingBulk(true);
+    const results: any[] = onlyFailed ? [...confirmResults] : [];
+
+    for (let i = 0; i < rowsToProcess.length; i++) {
+      const row = rowsToProcess[i];
+      setConfirmProgress({
+        current: i + 1,
+        total: rowsToProcess.length,
+        currentUsn: row.usn,
+      });
+
+      try {
+        const res = await fetch("/api/students/upload/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: [row] }),
+        });
+        const data = await res.json();
+        const rowResult = data.results?.[0] || {
+          usn: row.usn,
+          success: false,
+          error: data.error || "Confirmation failed",
+        };
+
+        if (onlyFailed) {
+          const idx = results.findIndex((cr) => cr.usn === row.usn);
+          if (idx !== -1) results[idx] = rowResult;
+          else results.push(rowResult);
+        } else {
+          results.push(rowResult);
+        }
+      } catch (err: any) {
+        const failedEntry = {
+          usn: row.usn,
+          success: false,
+          error: err.message || "Network error",
+        };
+        if (onlyFailed) {
+          const idx = results.findIndex((cr) => cr.usn === row.usn);
+          if (idx !== -1) results[idx] = failedEntry;
+          else results.push(failedEntry);
+        } else {
+          results.push(failedEntry);
+        }
+      }
+    }
+
+    setConfirmResults([...results]);
+    setIsConfirmingBulk(false);
+    setConfirmProgress(null);
+
+    const successCount = results.filter((r) => r.success).length;
+    setStatusMessage({
+      text: `Batch registration complete: ${successCount} of ${results.length} students confirmed!`,
+      type: successCount === results.length ? "success" : "info",
+    });
+
+    await loadUniversityData();
   };
 
   // Auto-fill Syllabus & Course subjects for the Marksheet Generator
@@ -476,6 +573,37 @@ export default function UniversityPage() {
       alert("Failed to generate PDF preview: " + err.message);
     } finally {
       setIsGeneratingMarksheet(false);
+    }
+  };
+
+  const loadStudentHistoryList = async () => {
+    try {
+      setIsLoadingHistory(true);
+      const res = await fetch("/api/students/history");
+      const data = await res.json();
+      if (data.students) {
+        setHistoryStudents(data.students);
+      }
+    } catch (e) {
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
+  const loadStudentVersions = async (usnToLoad: string) => {
+    try {
+      setIsLoadingHistory(true);
+      const res = await fetch(`/api/students/history?usn=${encodeURIComponent(usnToLoad)}`);
+      const data = await res.json();
+      if (data.student) {
+        setSelectedHistoryStudent(data.student);
+      }
+      if (data.versions) {
+        setHistoryVersions(data.versions);
+      }
+    } catch (e) {
+    } finally {
+      setIsLoadingHistory(false);
     }
   };
 
@@ -624,144 +752,7 @@ export default function UniversityPage() {
     }
   };
 
-  // Process Bulk CSV/Excel Upload: Creates individual authentic PDFs with QR, pins separately, and anchors on Ethereum
-  const handleProcessBulkUpload = async () => {
-    if (csvParsedRows.length === 0) return;
 
-    setIsProcessingBulk(true);
-    setStatusMessage({
-      text: `Starting decentralized batch processing for ${csvParsedRows.length} students... Generating official PDF marksheets with embedded QR codes & anchoring to Ethereum.`,
-      type: "info",
-    });
-
-    const results: {
-      usn: string;
-      name: string;
-      studentId: number;
-      credentialId?: number;
-      cid?: string;
-      status: "success" | "error";
-      error?: string;
-      pdfBytes?: Uint8Array;
-    }[] = [];
-
-    try {
-      for (let i = 0; i < csvParsedRows.length; i++) {
-        const row = csvParsedRows[i];
-        setBulkProgress({ current: i + 1, total: csvParsedRows.length });
-
-        try {
-          // 1. Register student on-chain
-          const regRes = await fetch("/api/blockchain/relay", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "registerStudent",
-              universityCode: currentUnivCode,
-              data: {
-                usn: row.usn,
-                name: row.name,
-                course: row.course,
-                gradYear: row.graduationYear,
-                percentage: row.percentage,
-              },
-            }),
-          });
-          const regData = await regRes.json();
-          if (!regRes.ok || !regData.studentId) {
-            throw new Error(regData.error || `Student registration failed for ${row.usn}`);
-          }
-          const studentId = Number(regData.studentId);
-
-          // 2. Build verify QR URL pointing to /verify?usn=...
-          const origin =
-            typeof window !== "undefined"
-              ? window.location.origin
-              : "https://blockchain-document-verification-one.vercel.app";
-          const verifyUrl = `${origin}/verify?usn=${encodeURIComponent(row.usn.toUpperCase())}`;
-
-          // 3. Generate high-fidelity official PDF with embedded QR code
-          const pdfBytes = await generateMarksheetPDF({
-            universityName: currentUnivName,
-            universityCode: currentUnivCode,
-            studentName: row.name,
-            usn: row.usn,
-            course: row.course,
-            graduationYear: row.graduationYear || new Date().getFullYear(),
-            percentage: row.percentage,
-            documentType: row.documentType || "Academic Marksheet",
-            academicDistinction:
-              row.gradeRemark || (row.percentage >= 75 ? "FIRST CLASS WITH DISTINCTION" : "FIRST CLASS"),
-            verificationUrl: verifyUrl,
-          });
-
-          // 4. Create File and Compute SHA-256
-          const pdfFile = new File([pdfBytes as any], `${row.usn}_official_marksheet.pdf`, {
-            type: "application/pdf",
-          });
-          const docHash = await computeSHA256(pdfFile);
-
-          // 5. Pin real PDF to Pinata IPFS
-          const { cid } = await uploadToIPFS(pdfFile);
-
-          // 6. Anchor credential proof separately on-chain
-          const issueRes = await fetch("/api/blockchain/relay", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "issueCredential",
-              universityCode: currentUnivCode,
-              data: {
-                studentId,
-                documentType: row.documentType || "Academic Marksheet",
-                documentHash: docHash,
-                ipfsCID: cid,
-              },
-            }),
-          });
-          const issueData = await issueRes.json();
-          if (!issueRes.ok) {
-            throw new Error(issueData.error || "Failed to anchor credential proof on ledger");
-          }
-
-          results.push({
-            usn: row.usn,
-            name: row.name,
-            studentId,
-            credentialId: issueData.credentialId,
-            cid,
-            status: "success",
-            pdfBytes,
-          });
-        } catch (rowErr: any) {
-          console.error(`Row ${i + 1} (${row.usn}) failed:`, rowErr);
-          results.push({
-            usn: row.usn,
-            name: row.name,
-            studentId: 0,
-            status: "error",
-            error: rowErr.message || "Failed processing record",
-          });
-        }
-      }
-
-      setBulkResults(results);
-      const successCount = results.filter((r) => r.status === "success").length;
-      setStatusMessage({
-        text: `Batch complete: ${successCount} of ${csvParsedRows.length} students processed! Each received an authentic PDF marksheet with embedded QR code anchored on Ethereum & IPFS.`,
-        type: successCount === csvParsedRows.length ? "success" : "info",
-      });
-      await loadUniversityData();
-    } catch (err: any) {
-      setStatusMessage({
-        text: "Bulk upload error: " + (err.message || "Relayer error"),
-        type: "error",
-      });
-    } finally {
-      setIsProcessingBulk(false);
-      setBulkProgress(null);
-    }
-  };
 
   // Review & Endorse Student Achievement
   const handleReviewAchievement = async (
@@ -818,9 +809,49 @@ export default function UniversityPage() {
     }
   };
 
+  // 45-second visibility polling (pauses when tab hidden, resumes on visible, stops on logout)
+  useVisibilityPolling(
+    () => {
+      loadUniversityData();
+      loadAchievements();
+    },
+    45000,
+    Boolean(isAuthenticated && currentUnivCode)
+  );
+
+  // Compute Process Stepper State
+  const pendingAchievementsCount = pendingAchievements.filter(
+    (a) => a.status === AchievementStatus.PendingReview
+  ).length;
+  const verifiedAchievementsCount = pendingAchievements.filter(
+    (a) => a.status === AchievementStatus.Verified
+  ).length;
+
+  const stepperState = getCollegeStepperState({
+    university: { id: universityId, active: true, universityCode: currentUnivCode },
+    totalStudents: students.length,
+    pendingCount: pendingAchievementsCount,
+    verifiedCount: verifiedAchievementsCount + credentials.length,
+    totalCredentials: credentials.length,
+  });
+
   return (
     <RoleGuard allowedRoles={["university", "admin"]} portalName="University Authority Portal">
       <div className="space-y-8 rounded-3xl p-2 sm:p-4 bg-gradient-to-b from-sky-950/20 via-slate-950/60 to-slate-950">
+        {/* Workflow Process Stepper */}
+        <ProcessStepper
+          state={stepperState}
+          onAction={() => {
+            if (stepperState.currentStepId === "onboard_students") setActiveTab("bulk");
+            else if (stepperState.currentStepId === "review_queue") setActiveTab("achievements");
+            else if (stepperState.currentStepId === "endorse_reject") setActiveTab("achievements");
+            else if (stepperState.currentStepId === "reports_history") {
+              setActiveTab("history");
+              if (historyStudents.length === 0) loadStudentHistoryList();
+            }
+          }}
+        />
+
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-sky-900/30 pb-6">
           <div className="space-y-1">
@@ -913,6 +944,21 @@ export default function UniversityPage() {
             <FileCheck className="w-4 h-4" />
             <span>Issued Records ({credentials.length})</span>
           </button>
+
+          <button
+            onClick={() => {
+              setActiveTab("history");
+              if (historyStudents.length === 0) loadStudentHistoryList();
+            }}
+            className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              activeTab === "history"
+                ? "bg-sky-600 text-white shadow-md shadow-sky-600/30"
+                : "bg-slate-900/60 text-slate-400 hover:text-white border border-slate-800"
+            }`}
+          >
+            <Clock className="w-4 h-4" />
+            <span>Student History & Reports</span>
+          </button>
         </div>
 
         {/* Status Messages */}
@@ -972,6 +1018,20 @@ export default function UniversityPage() {
                       className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500"
                     />
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    Student Official Email (Used for secure OTP authentication)
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="student@university.edu"
+                    value={studentEmail}
+                    onChange={(e) => setStudentEmail(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500 font-mono"
+                  />
                 </div>
 
                 <div>
@@ -1241,7 +1301,7 @@ export default function UniversityPage() {
                     <input
                       type="text"
                       required
-                      placeholder="e.g. 1RV21CS001"
+                      placeholder="Enter student USN"
                       value={genUsn}
                       onChange={(e) => setGenUsn(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500 uppercase font-mono"
@@ -1255,7 +1315,7 @@ export default function UniversityPage() {
                     <input
                       type="text"
                       required
-                      placeholder="e.g. Rahul Sharma"
+                      placeholder="Enter candidate full name"
                       value={genName}
                       onChange={(e) => setGenName(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500"
@@ -1478,179 +1538,326 @@ export default function UniversityPage() {
           </div>
         )}
 
-        {/* TAB 3: Bulk CSV / Excel Upload & Batch Processor */}
+        {/* TAB 3: Multi-Format Student Onboarding (CSV, XLSX, PDF) & Marks Engine */}
         {activeTab === "bulk" && (
           <div className="glass-panel rounded-3xl p-6 space-y-6 border border-sky-500/20 bg-slate-900/60 shadow-xl">
+            {/* Header & Template Download Options */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-sky-900/30 pb-4">
               <div className="space-y-1">
                 <h3 className="text-base font-bold text-white flex items-center gap-2">
                   <FileSpreadsheet className="w-5 h-5 text-sky-400" />
-                  <span>Bulk Student CSV / Excel Parsing & Automated PDF Generation</span>
+                  <span>Multi-Format Student Onboarding & Marks Verification</span>
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Upload a spreadsheet (.csv, .xlsx, .xls) containing multiple student records. VeriChain generates individual authentic PDF marksheets with embedded blockchain QR codes, computes separate SHA-256 fingerprints, pins files to IPFS, and permanently anchors each record on Ethereum.
+                  Upload CSV, Excel (.xlsx), or text-layer PDF marksheets. Automatically extracts candidate records, validates college codes, computes totals & grades, and registers students through the Ethereum relayer.
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={downloadCsvTemplate}
-                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 text-xs font-semibold flex items-center gap-2 border border-slate-700 transition-colors shrink-0"
-              >
-                <Download className="w-4 h-4" />
-                <span>Download Sample Template</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => downloadTemplate("csv")}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors"
+                  title="Download blank CSV with official headers"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Blank CSV</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => downloadTemplate("xlsx")}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors"
+                  title="Download blank Excel XLSX with official headers"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Blank Excel</span>
+                </button>
+              </div>
             </div>
 
-            {/* CSV / Excel File Input */}
+            {/* File Picker (CSV, XLSX, PDF) */}
             <div className="border-2 border-dashed border-sky-700/50 hover:border-sky-500 rounded-3xl p-8 text-center bg-slate-950/60 transition-colors">
               <input
                 type="file"
-                accept=".csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-                onChange={handleCsvFileChange}
+                accept=".csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf"
+                onChange={handleFileSelect}
                 className="hidden"
-                id="bulkCsvInput"
+                id="multiFormatInput"
+                disabled={isPreviewLoading || isConfirmingBulk}
               />
-              <label htmlFor="bulkCsvInput" className="cursor-pointer space-y-3 block">
+              <label htmlFor="multiFormatInput" className="cursor-pointer space-y-3 block">
                 <div className="w-12 h-12 rounded-2xl bg-sky-500/10 text-sky-400 flex items-center justify-center mx-auto">
                   <Upload className="w-6 h-6" />
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-white">
-                    {csvFile ? csvFile.name : "Select or Drop Student Records Spreadsheet (CSV or Excel .xlsx)"}
+                    {uploadFile ? uploadFile.name : "Select or Drop Student File (CSV, Excel .xlsx, or PDF)"}
                   </p>
                   <p className="text-xs text-slate-400 mt-1">
-                    Supports columns: <code>usn, name, course, graduationYear, percentage, documentType</code>
+                    Max file size: <strong>5 MB</strong> · Max rows: <strong>500</strong> · Scanned images must have selectable text layer
                   </p>
                 </div>
               </label>
             </div>
 
-            {/* Bulk Results Table from recent run */}
-            {bulkResults.length > 0 && (
-              <div className="space-y-3 p-4 rounded-2xl bg-slate-950 border border-slate-800">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-white flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    Batch Processing Ledger Records ({bulkResults.length} Processed)
-                  </span>
+            {/* Preview Summary Badges */}
+            {previewSummary && (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+                <div className="p-3 rounded-2xl bg-slate-950/80 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase font-semibold">Total Students</span>
+                  <p className="text-lg font-bold text-white font-mono mt-0.5">{previewSummary.totalStudents}</p>
                 </div>
 
-                <div className="overflow-x-auto max-h-64 border border-slate-800 rounded-xl">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-900 text-slate-400 uppercase text-[10px]">
-                      <tr>
-                        <th className="px-3 py-2">USN</th>
-                        <th className="px-3 py-2">Name</th>
-                        <th className="px-3 py-2">Credential</th>
-                        <th className="px-3 py-2">Status</th>
-                        <th className="px-3 py-2 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800 font-mono">
-                      {bulkResults.map((res, i) => (
-                        <tr key={i} className="hover:bg-slate-900/40">
-                          <td className="px-3 py-2 font-bold text-sky-300">{res.usn}</td>
-                          <td className="px-3 py-2 font-sans text-white">{res.name}</td>
-                          <td className="px-3 py-2 text-purple-300">
-                            {res.credentialId ? `#${res.credentialId}` : "-"}
-                          </td>
-                          <td className="px-3 py-2 font-sans">
-                            {res.status === "success" ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                                ✅ Minted & Anchored
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-rose-500/20 text-rose-300 border border-rose-500/30" title={res.error}>
-                                ❌ Failed
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 text-right font-sans">
-                            {res.pdfBytes && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  downloadPDFFile(res.pdfBytes!, `${res.usn}_official_marksheet.pdf`)
-                                }
-                                className="px-2.5 py-1 rounded bg-sky-900/50 hover:bg-sky-800 text-sky-300 hover:text-white border border-sky-600/40 text-[11px] font-semibold inline-flex items-center gap-1 mr-2"
-                              >
-                                <Download className="w-3 h-3" />
-                                <span>PDF</span>
-                              </button>
-                            )}
-                            <a
-                              href={`/verify?usn=${encodeURIComponent(res.usn)}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-[11px] inline-flex items-center gap-1"
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                              <span>Verify</span>
-                            </a>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="p-3 rounded-2xl bg-slate-950/80 border border-emerald-500/30">
+                  <span className="text-[10px] text-emerald-400 uppercase font-semibold">Valid Rows</span>
+                  <p className="text-lg font-bold text-emerald-300 font-mono mt-0.5">{previewSummary.validCount}</p>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-slate-950/80 border border-amber-500/30">
+                  <span className="text-[10px] text-amber-400 uppercase font-semibold">Existing (v2 Update)</span>
+                  <p className="text-lg font-bold text-amber-300 font-mono mt-0.5">{previewSummary.warningCount}</p>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-slate-950/80 border border-rose-500/30">
+                  <span className="text-[10px] text-rose-400 uppercase font-semibold">Errors (Rejected)</span>
+                  <p className="text-lg font-bold text-rose-300 font-mono mt-0.5">{previewSummary.errorCount}</p>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-slate-950/80 border border-purple-500/30 col-span-2 sm:col-span-1">
+                  <span className="text-[10px] text-purple-400 uppercase font-semibold">Duplicate USNs</span>
+                  <p className="text-lg font-bold text-purple-300 font-mono mt-0.5">{previewSummary.duplicateCount}</p>
                 </div>
               </div>
             )}
 
-            {/* Parsed Rows Preview Table */}
-            {csvParsedRows.length > 0 && (
+            {/* Editable Preview Table */}
+            {previewRows.length > 0 && (
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                   <span className="text-xs font-bold text-slate-200">
-                    Parsed Records Ready for On-Chain Batch Processing ({csvParsedRows.length} Students)
+                    Candidate Pre-Registration Verification Table ({previewRows.length} Students)
                   </span>
-                  <span className="text-[11px] font-mono text-cyan-400">
-                    Each record will generate an authentic PDF with verification QR code & IPFS anchor
+                  <span className="text-[11px] text-slate-400">
+                    💡 Cells with editable values can be corrected inline prior to ledger confirmation.
                   </span>
                 </div>
 
-                <div className="overflow-x-auto max-h-72 border border-slate-800 rounded-2xl">
+                <div className="overflow-x-auto max-h-96 border border-slate-800 rounded-2xl">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                    <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] border-b border-slate-800 sticky top-0">
                       <tr>
-                        <th className="px-3 py-2.5">#</th>
+                        <th className="px-3 py-2.5">Status</th>
                         <th className="px-3 py-2.5">USN</th>
                         <th className="px-3 py-2.5">Candidate Name</th>
+                        <th className="px-3 py-2.5">Official Email</th>
                         <th className="px-3 py-2.5">Course</th>
                         <th className="px-3 py-2.5">Grad Year</th>
                         <th className="px-3 py-2.5">Score</th>
-                        <th className="px-3 py-2.5">Document Type</th>
+                        <th className="px-3 py-2.5">Validation Findings</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800 font-mono text-slate-300">
-                      {csvParsedRows.map((r, i) => (
-                        <tr key={i} className="hover:bg-slate-900/50">
-                          <td className="px-3 py-2 text-slate-500">{i + 1}</td>
-                          <td className="px-3 py-2 font-bold text-sky-300">{r.usn}</td>
-                          <td className="px-3 py-2 font-sans font-semibold text-white">{r.name}</td>
-                          <td className="px-3 py-2 font-sans text-slate-300">{r.course}</td>
-                          <td className="px-3 py-2">{r.graduationYear}</td>
-                          <td className="px-3 py-2 text-emerald-400">{r.percentage}%</td>
-                          <td className="px-3 py-2 font-sans text-cyan-300">{r.documentType}</td>
+                      {previewRows.map((r) => (
+                        <tr
+                          key={r.rowId}
+                          className={`hover:bg-slate-900/40 transition-colors ${
+                            r.status === "error"
+                              ? "bg-rose-950/20"
+                              : r.status === "warning"
+                              ? "bg-amber-950/20"
+                              : ""
+                          }`}
+                        >
+                          <td className="px-3 py-2 font-sans">
+                            {r.status === "valid" ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                ✅ Valid
+                              </span>
+                            ) : r.status === "warning" ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                ⚠️ Existing
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                                ❌ Error
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="px-3 py-2">
+                            <input
+                              type="text"
+                              value={r.usn}
+                              onChange={(e) => handleCellEdit(r.rowId, "usn", e.target.value)}
+                              className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-xs text-sky-300 font-bold font-mono w-28 uppercase"
+                            />
+                          </td>
+
+                          <td className="px-3 py-2 font-sans">
+                            <input
+                              type="text"
+                              value={r.name}
+                              onChange={(e) => handleCellEdit(r.rowId, "name", e.target.value)}
+                              className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-xs text-white font-sans w-36"
+                            />
+                          </td>
+
+                          <td className="px-3 py-2">
+                            <input
+                              type="email"
+                              value={r.email}
+                              onChange={(e) => handleCellEdit(r.rowId, "email", e.target.value)}
+                              className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-xs text-slate-300 font-mono w-44"
+                            />
+                          </td>
+
+                          <td className="px-3 py-2 font-sans">
+                            <input
+                              type="text"
+                              value={r.course}
+                              onChange={(e) => handleCellEdit(r.rowId, "course", e.target.value)}
+                              className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-xs text-slate-300 font-sans w-32"
+                            />
+                          </td>
+
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              value={r.gradYear}
+                              onChange={(e) => handleCellEdit(r.rowId, "gradYear", Number(e.target.value))}
+                              className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-xs text-slate-300 font-mono w-16"
+                            />
+                          </td>
+
+                          <td className="px-3 py-2 text-emerald-400 font-bold">
+                            {r.computedPercentage}% ({r.computedGrade})
+                            {r.subjects && r.subjects.length > 0 && (
+                              <span className="block text-[10px] text-slate-400 font-normal">
+                                {r.subjects.length} Subjects
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="px-3 py-2 font-sans text-[11px]">
+                            {r.errorMessages && r.errorMessages.length > 0 ? (
+                              <ul className="text-rose-300 list-disc list-inside space-y-0.5">
+                                {r.errorMessages.map((msg: string, idx: number) => (
+                                  <li key={idx}>{msg}</li>
+                                ))}
+                              </ul>
+                            ) : r.isAlreadyRegistered ? (
+                              <span className="text-amber-300">Will update student record and write v2 marks.</span>
+                            ) : (
+                              <span className="text-emerald-400">Ready for registration.</span>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
 
-                <button
-                  type="button"
-                  disabled={isProcessingBulk}
-                  onClick={handleProcessBulkUpload}
-                  className="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-semibold py-3 rounded-xl text-xs transition-all shadow-lg shadow-sky-600/25 flex items-center justify-center gap-2"
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>
-                    {isProcessingBulk
-                      ? `Compiling Marksheets & Anchoring ${bulkProgress?.current} of ${bulkProgress?.total} Students to Ethereum & IPFS...`
-                      : `Execute Decentralized Bulk Anchoring (${csvParsedRows.length} Students)`}
-                  </span>
-                </button>
+                {/* Confirm & Progress Section */}
+                <div className="space-y-3 pt-2">
+                  {confirmProgress && (
+                    <div className="p-3 rounded-2xl bg-slate-950 border border-sky-800 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-sky-300 font-semibold flex items-center gap-1.5">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Registering Candidate: <strong className="font-mono">{confirmProgress.currentUsn}</strong>
+                        </span>
+                        <span className="font-mono text-slate-400">
+                          {confirmProgress.current} / {confirmProgress.total}
+                        </span>
+                      </div>
+                      <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden">
+                        <div
+                          className="bg-gradient-to-r from-sky-500 to-indigo-500 h-full transition-all duration-300"
+                          style={{
+                            width: `${Math.round((confirmProgress.current / confirmProgress.total) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={
+                        isConfirmingBulk ||
+                        previewRows.filter((r) => r.status !== "error").length === 0
+                      }
+                      onClick={() => handleConfirmBatch(false)}
+                      className="flex-1 bg-gradient-to-r from-sky-600 via-indigo-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-xl text-xs transition-all shadow-lg shadow-sky-600/30 flex items-center justify-center gap-2"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>
+                        {isConfirmingBulk
+                          ? "Executing Row-by-Row Ledger Registration..."
+                          : `Confirm & Register Valid Students (${
+                              previewRows.filter((r) => r.status !== "error").length
+                            })`}
+                      </span>
+                    </button>
+
+                    {confirmResults.some((r) => !r.success) && (
+                      <button
+                        type="button"
+                        disabled={isConfirmingBulk}
+                        onClick={() => handleConfirmBatch(true)}
+                        className="px-5 py-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs flex items-center gap-2 transition-all shadow-lg shadow-amber-600/20"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Retry Failed Rows ({confirmResults.filter((r) => !r.success).length})</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Confirmation Results Audit Log */}
+            {confirmResults.length > 0 && (
+              <div className="space-y-3 p-4 rounded-2xl bg-slate-950 border border-slate-800">
+                <span className="text-xs font-bold text-white flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  Ledger Registration Audit Log ({confirmResults.length} Processed)
+                </span>
+
+                <div className="overflow-x-auto max-h-60 border border-slate-800 rounded-xl">
+                  <table className="w-full text-left text-xs font-mono">
+                    <thead className="bg-slate-900 text-slate-400 uppercase text-[10px]">
+                      <tr>
+                        <th className="px-3 py-2">USN</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Version</th>
+                        <th className="px-3 py-2">Transaction Hash</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {confirmResults.map((res, i) => (
+                        <tr key={i} className="hover:bg-slate-900/40">
+                          <td className="px-3 py-2 font-bold text-sky-300">{res.usn}</td>
+                          <td className="px-3 py-2 font-sans">
+                            {res.success ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                ✅ Registered On Ledger
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] bg-rose-500/20 text-rose-300 border border-rose-500/30" title={res.error}>
+                                ❌ Failed: {res.error}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-slate-400">{res.version ? `v${res.version}` : "-"}</td>
+                          <td className="px-3 py-2 text-slate-500 truncate max-w-xs">{res.txHash || "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
@@ -1838,6 +2045,231 @@ export default function UniversityPage() {
                 </table>
               )}
             </div>
+          </div>
+        )}
+
+        {/* TAB 6: Student Academic Version History & Report Download */}
+        {activeTab === "history" && (
+          <div className="glass-panel rounded-3xl p-6 space-y-6 border border-sky-500/20 shadow-xl bg-slate-900/60">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-sky-900/30 pb-4">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-sky-400" />
+                  <span>Student Academic Version History & Official Reports</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Append-only immutable audit trail. Every update creates a new version with Keccak-256 hash anchored to Ethereum smart contracts, preserving past versions as superseded.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <input
+                  type="text"
+                  placeholder="Enter Student USN (e.g. 1RV21CS001)"
+                  value={historySearchUsn}
+                  onChange={(e) => setHistorySearchUsn(e.target.value)}
+                  className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 font-mono uppercase"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (historySearchUsn.trim()) {
+                      loadStudentVersions(historySearchUsn.trim().toUpperCase());
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold flex items-center gap-1 transition-all shadow-md shadow-sky-600/20"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  Search
+                </button>
+              </div>
+            </div>
+
+            {selectedHistoryStudent ? (
+              <div className="space-y-6">
+                {/* Candidate Overview Card */}
+                <div className="p-4 rounded-2xl bg-slate-950/70 border border-sky-900/40 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-white">{selectedHistoryStudent.name}</span>
+                      <span className="px-2 py-0.5 rounded-md bg-sky-500/20 border border-sky-500/40 text-sky-300 font-mono text-xs font-bold">
+                        {selectedHistoryStudent.usn}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold">
+                        Active v{selectedHistoryStudent.marksVersion || 1}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      {selectedHistoryStudent.course} · Class of {selectedHistoryStudent.gradYear} · {selectedHistoryStudent.email}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={`/api/reports/download?usn=${encodeURIComponent(selectedHistoryStudent.usn)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-emerald-600/20"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Download Latest Official Report
+                    </a>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedHistoryStudent(null);
+                        setHistoryVersions([]);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-all"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+                {/* Versions Table */}
+                <div className="overflow-x-auto">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                    Append-Only Immutable Version Ledger
+                  </h4>
+                  {historyVersions.length === 0 ? (
+                    <div className="text-xs text-slate-500 py-6 text-center">
+                      No version history found for candidate {selectedHistoryStudent.usn}.
+                    </div>
+                  ) : (
+                    <table className="w-full text-left text-xs">
+                      <thead className="text-[11px] text-slate-400 uppercase bg-slate-950/80 border-b border-slate-800">
+                        <tr>
+                          <th className="px-3 py-3">Version</th>
+                          <th className="px-3 py-3">Status</th>
+                          <th className="px-3 py-3">Scored / Total</th>
+                          <th className="px-3 py-3">Percentage</th>
+                          <th className="px-3 py-3">Keccak-256 Marks Hash</th>
+                          <th className="px-3 py-3">Editor</th>
+                          <th className="px-3 py-3">Recorded At</th>
+                          <th className="px-3 py-3">Remarks</th>
+                          <th className="px-3 py-3">Report PDF</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800 font-mono">
+                        {historyVersions.map((v) => {
+                          const isActive = v.status === "active" || v.version === selectedHistoryStudent.marksVersion;
+                          return (
+                            <tr key={v.id || v.version} className="hover:bg-slate-900/50 transition-colors">
+                              <td className="px-3 py-3 font-bold text-sky-300">v{v.version}</td>
+                              <td className="px-3 py-3 font-sans">
+                                {isActive ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                    Active
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-800 border border-slate-700 text-slate-400">
+                                    Superseded
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-3 py-3 font-sans text-slate-300">
+                                {v.totalMarks} / {v.maxTotalMarks}
+                              </td>
+                              <td className="px-3 py-3 font-sans font-bold text-emerald-400">
+                                {Number(v.percentage || 0).toFixed(2)}%
+                              </td>
+                              <td className="px-3 py-3 text-cyan-300 max-w-xs truncate" title={v.marksHash}>
+                                {v.marksHash ? `${v.marksHash.slice(0, 10)}...${v.marksHash.slice(-8)}` : "N/A"}
+                              </td>
+                              <td className="px-3 py-3 text-slate-400 font-sans">{v.changedBy || "System"}</td>
+                              <td className="px-3 py-3 text-slate-400 font-sans text-[11px]">
+                                {new Date(v.createdAt).toLocaleDateString()} {new Date(v.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </td>
+                              <td className="px-3 py-3 text-slate-400 font-sans text-[11px] max-w-xs truncate" title={v.remarks}>
+                                {v.remarks || "Onboarding batch"}
+                              </td>
+                              <td className="px-3 py-3 font-sans">
+                                <a
+                                  href={`/api/reports/download?usn=${encodeURIComponent(selectedHistoryStudent.usn)}&version=${v.version}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-600/30 hover:bg-sky-600/50 text-sky-300 border border-sky-500/30 text-xs font-semibold transition-all"
+                                >
+                                  <Download className="w-3 h-3" />
+                                  PDF
+                                </a>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center text-xs text-slate-400">
+                  <span>Registered College Students ({historyStudents.length})</span>
+                  <button
+                    type="button"
+                    onClick={loadStudentHistoryList}
+                    className="text-sky-400 hover:text-sky-300 flex items-center gap-1"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isLoadingHistory ? "animate-spin" : ""}`} />
+                    Refresh Candidate List
+                  </button>
+                </div>
+
+                {historyStudents.length === 0 ? (
+                  <div className="text-xs text-slate-500 py-12 text-center border border-dashed border-slate-800 rounded-2xl">
+                    No registered students found for college {currentUnivCode}. Onboard students using Bulk CSV/Excel or Single Student Issuance.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="text-[11px] text-slate-400 uppercase bg-slate-950/80 border-b border-slate-800">
+                        <tr>
+                          <th className="px-3 py-3">USN</th>
+                          <th className="px-3 py-3">Candidate Name</th>
+                          <th className="px-3 py-3">Official Email</th>
+                          <th className="px-3 py-3">Course</th>
+                          <th className="px-3 py-3">Current Version</th>
+                          <th className="px-3 py-3">Current %</th>
+                          <th className="px-3 py-3">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800 font-mono">
+                        {historyStudents.map((s) => (
+                          <tr key={s.id || s.usn} className="hover:bg-slate-900/50 transition-colors">
+                            <td className="px-3 py-3 font-bold text-sky-300">{s.usn}</td>
+                            <td className="px-3 py-3 font-sans text-white font-medium">{s.name}</td>
+                            <td className="px-3 py-3 font-sans text-slate-400">{s.email}</td>
+                            <td className="px-3 py-3 font-sans text-slate-300">{s.course}</td>
+                            <td className="px-3 py-3 font-sans">
+                              <span className="px-2 py-0.5 rounded-md bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-bold">
+                                v{s.marksVersion || 1}
+                              </span>
+                            </td>
+                            <td className="px-3 py-3 font-sans font-bold text-emerald-400">
+                              {Number(s.percentage || 0).toFixed(2)}%
+                            </td>
+                            <td className="px-3 py-3 font-sans">
+                              <button
+                                type="button"
+                                onClick={() => loadStudentVersions(s.usn)}
+                                className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition-all shadow-md shadow-sky-600/20"
+                              >
+                                <Clock className="w-3 h-3" />
+                                Inspect History
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

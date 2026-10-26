@@ -34,11 +34,14 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { RoleGuard } from "@/components/RoleGuard";
 import { useAuth } from "@/context/AuthContext";
 import { CandidateSummaryCharts } from "@/components/CandidateSummaryCharts";
+import { ProcessStepper } from "@/components/ProcessStepper";
+import { getCompanyStepperState } from "@/lib/stepperEngine";
+import { useVisibilityPolling } from "@/lib/useVisibilityPolling";
 
 export default function CompanyPage() {
-  const { entityInfo } = useAuth();
-  const currentCompCode = entityInfo?.code || "INFY-BLR-01";
-  const currentCompName = entityInfo?.name || "Infosys Technologies Ltd";
+  const { entityInfo, isAuthenticated } = useAuth();
+  const currentCompCode = entityInfo?.code || "";
+  const currentCompName = entityInfo?.name || "Corporate Hiring Partner";
 
   const [companyId, setCompanyId] = useState<number>(1);
   const [isLoading, setIsLoading] = useState(true);
@@ -166,12 +169,14 @@ export default function CompanyPage() {
       const sId = Number(foundStudent.id);
 
       // Fetch University
-      let uName = "Visvesvaraya Technological University";
-      let uCode = "VTU-KA-001";
+      let uName = "Affiliated University";
+      let uCode = "N/A";
       try {
         const u = await contract.getUniversity(foundStudent.universityId);
-        uName = u.name;
-        uCode = u.universityCode;
+        if (u && u.name) {
+          uName = u.name;
+          uCode = u.universityCode;
+        }
       } catch (e) {}
 
       // Fetch credentials
@@ -334,9 +339,35 @@ export default function CompanyPage() {
     }
   };
 
+  // 45-second visibility polling (pauses when tab hidden, resumes on visible, stops on logout)
+  useVisibilityPolling(
+    () => {
+      loadCompanyData();
+    },
+    45000,
+    Boolean(isAuthenticated && currentCompCode)
+  );
+
+  // Compute Process Stepper State (step 5 reflects candidate currently searched or last recorded)
+  const candidateCredIds = new Set(candidateCreds.map((c) => Number(c.credentialId)));
+  const candidateReceipt = history.find((h) => candidateCredIds.has(Number(h.credentialId))) || (fullAuditResult ? history[0] : null);
+  const hasCandidateReceipt = candidateSummary ? Boolean(candidateReceipt) : history.length > 0;
+
+  const stepperState = getCompanyStepperState({
+    company: { id: companyId, active: true, companyCode: currentCompCode },
+    candidate: candidateSummary,
+    credentialsCount: candidateCreds.length,
+    tamperAuditResult: fullAuditResult,
+    verificationReceipt: candidateSummary ? candidateReceipt || null : (history.length > 0 ? history[0] : null),
+    hasOnChainVerificationRecord: hasCandidateReceipt,
+  });
+
   return (
     <RoleGuard allowedRoles={["company", "admin"]} portalName="Company Recruiter Portal">
       <div className="space-y-8 rounded-3xl p-2 sm:p-4 bg-gradient-to-b from-emerald-950/20 via-slate-950/60 to-slate-950">
+        {/* Workflow Process Stepper */}
+        <ProcessStepper state={stepperState} />
+
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-emerald-900/30 pb-6">
           <div className="space-y-1">

@@ -450,7 +450,7 @@ export default function LoginPage() {
                       type="text"
                       value={univCode}
                       onChange={(e) => setUnivCode(e.target.value)}
-                      placeholder="e.g. VTU-KA-001"
+                      placeholder="Enter University Identifier"
                       className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                     />
                   </div>
@@ -555,7 +555,7 @@ export default function LoginPage() {
                       type="text"
                       value={compCode}
                       onChange={(e) => setCompCode(e.target.value)}
-                      placeholder="e.g. INFY-BLR-01"
+                      placeholder="Enter Corporate Identifier"
                       className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                     />
                   </div>
@@ -664,7 +664,7 @@ export default function LoginPage() {
                         setStudentInput(e.target.value);
                         if (otpSent) setOtpSent(false);
                       }}
-                      placeholder="e.g. 1RV21CS001"
+                      placeholder="Enter University Seat Number (USN)"
                       className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                     />
                   </div>

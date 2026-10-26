@@ -1,72 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
-import os from "os";
 import { AccessRequest } from "@/types";
 import { getReadOnlyServerContract, getServerContract } from "@/lib/serverContract";
 import { getServerSession } from "@/lib/serverAuth";
 import { generateAndStoreAccessCode } from "@/lib/accessCodeStore";
-
-const CWD_FILE = path.join(process.cwd(), ".access_requests.json");
-const TMP_FILE = path.join(os.tmpdir(), "access_requests.json");
-
-declare global {
-  var __accessRequestsCache: AccessRequest[] | undefined;
-}
-
-function readLocalRequests(): AccessRequest[] {
-  if (global.__accessRequestsCache && Array.isArray(global.__accessRequestsCache)) {
-    return global.__accessRequestsCache;
-  }
-
-  try {
-    if (fs.existsSync(TMP_FILE)) {
-      const content = fs.readFileSync(TMP_FILE, "utf-8");
-      const parsed = JSON.parse(content);
-      if (Array.isArray(parsed)) {
-        global.__accessRequestsCache = parsed;
-        return parsed;
-      }
-    }
-  } catch {}
-
-  try {
-    if (fs.existsSync(CWD_FILE)) {
-      const content = fs.readFileSync(CWD_FILE, "utf-8");
-      const parsed = JSON.parse(content);
-      if (Array.isArray(parsed)) {
-        global.__accessRequestsCache = parsed;
-        return parsed;
-      }
-    }
-  } catch {}
-
-  global.__accessRequestsCache = [];
-  return [];
-}
-
-function writeLocalRequests(data: AccessRequest[]) {
-  global.__accessRequestsCache = data;
-  try {
-    fs.writeFileSync(TMP_FILE, JSON.stringify(data, null, 2));
-  } catch {}
-  try {
-    fs.writeFileSync(CWD_FILE, JSON.stringify(data, null, 2));
-  } catch {}
-}
+import { prisma } from "@/lib/prisma";
+import { parseAndValidateUSN } from "@/lib/usnParser";
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(req);
-  if (!session || session.role !== "admin") {
+  if (!session || (session.role !== "admin" && session.role !== "university")) {
     return NextResponse.json(
-      { error: "Forbidden: Platform Administrator privileges required to inspect institutional access requests." },
+      { error: "Forbidden: Administrator or College privileges required." },
       { status: 403 }
     );
   }
 
-  const localList = readLocalRequests();
+  // If university session, isolate requests strictly to this college's code
+  if (session.role === "university") {
+    const collegeCode = session.entityInfo?.code?.trim()?.toUpperCase();
+    if (!collegeCode) {
+      return NextResponse.json({ requests: [] });
+    }
+    const dbRequests = await prisma.accessRequest.findMany({
+      where: { proposedCode: collegeCode },
+      orderBy: { requestId: "asc" },
+    });
+    return NextResponse.json({
+      requests: dbRequests.map((r: any) => ({
+        requestId: r.requestId,
+        entityType: r.entityType as any,
+        name: r.name,
+        proposedCode: r.proposedCode,
+        contactEmail: r.contactEmail,
+        wallet: r.wallet,
+        approved: r.approved,
+        timestamp: r.createdAt.getTime(),
+      })),
+    });
+  }
+
+  // 1. Fetch persistent requests from PostgreSQL via Prisma
+  const dbRequests = await prisma.accessRequest.findMany({
+    orderBy: { requestId: "asc" },
+  });
+
   const onChainList: AccessRequest[] = [];
 
+  // 2. Sync with on-chain requests if accessible
   try {
     const contract = getReadOnlyServerContract();
     const countBig = await contract.getAccessRequestCount();
@@ -74,16 +54,16 @@ export async function GET(req: NextRequest) {
 
     for (let i = 1; i <= total; i++) {
       try {
-        const req = await contract.getAccessRequest(i);
+        const reqData = await contract.getAccessRequest(i);
         onChainList.push({
-          requestId: Number(req.requestId),
-          entityType: req.entityType as any,
-          name: req.name,
-          proposedCode: req.proposedCode,
-          contactEmail: req.contactEmail,
-          wallet: req.wallet,
-          approved: req.approved,
-          timestamp: Number(req.timestamp) * 1000,
+          requestId: Number(reqData.requestId),
+          entityType: reqData.entityType as any,
+          name: reqData.name,
+          proposedCode: reqData.proposedCode,
+          contactEmail: reqData.contactEmail,
+          wallet: reqData.wallet,
+          approved: reqData.approved,
+          timestamp: Number(reqData.timestamp) * 1000,
         });
       } catch {}
     }
@@ -95,16 +75,24 @@ export async function GET(req: NextRequest) {
   for (const r of onChainList) {
     map.set(`code_${r.proposedCode.toUpperCase()}`, r);
   }
-  for (const r of localList) {
+
+  for (const r of dbRequests) {
     const key = `code_${(r.proposedCode || "").toUpperCase()}`;
     if (!map.has(key)) {
-      map.set(key, r);
+      map.set(key, {
+        requestId: r.requestId,
+        entityType: r.entityType as any,
+        name: r.name,
+        proposedCode: r.proposedCode,
+        contactEmail: r.contactEmail,
+        wallet: r.wallet,
+        approved: r.approved,
+        timestamp: r.createdAt.getTime(),
+      });
     }
   }
 
   const merged = Array.from(map.values());
-  writeLocalRequests(merged);
-
   return NextResponse.json({ requests: merged });
 }
 
@@ -112,7 +100,6 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { action, requestData, requestId, entityData } = body;
-    const localRequests = readLocalRequests();
 
     // ----------------------------------------------------
     // Public Submission of Institutional Access Request
@@ -143,32 +130,44 @@ export async function POST(req: NextRequest) {
         console.warn("On-chain requestAccess submission warning:", chainErr);
       }
 
-      const newReq: AccessRequest = {
-        requestId:
-          onChainReqId ||
-          (localRequests.length > 0 ? Math.max(...localRequests.map((r) => r.requestId)) + 1 : 1),
-        entityType: entityType || "university",
-        name: name.trim(),
-        proposedCode: cleanCode,
-        contactEmail: contactEmail.trim(),
-        wallet: wallet || "0x0000000000000000000000000000000000000000",
-        approved: false,
-        timestamp: Date.now(),
-      };
+      // Determine next requestId for database
+      const highestDbReq = await prisma.accessRequest.findFirst({
+        orderBy: { requestId: "desc" },
+      });
+      const nextId = onChainReqId || (highestDbReq ? highestDbReq.requestId + 1 : 1);
 
-      const existingIndex = localRequests.findIndex(
-        (r) => r.proposedCode.toUpperCase() === cleanCode
-      );
-      if (existingIndex >= 0) {
-        localRequests[existingIndex] = newReq;
-      } else {
-        localRequests.push(newReq);
-      }
-      writeLocalRequests(localRequests);
+      const dbRecord = await prisma.accessRequest.upsert({
+        where: { proposedCode: cleanCode },
+        update: {
+          name: name.trim(),
+          contactEmail: contactEmail.trim(),
+          wallet: wallet || "0x0000000000000000000000000000000000000000",
+          entityType: entityType || "university",
+        },
+        create: {
+          requestId: nextId,
+          entityType: entityType || "university",
+          name: name.trim(),
+          proposedCode: cleanCode,
+          contactEmail: contactEmail.trim(),
+          wallet: wallet || "0x0000000000000000000000000000000000000000",
+          approved: false,
+          status: "pending",
+        },
+      });
 
       return NextResponse.json({
         success: true,
-        request: newReq,
+        request: {
+          requestId: dbRecord.requestId,
+          entityType: dbRecord.entityType,
+          name: dbRecord.name,
+          proposedCode: dbRecord.proposedCode,
+          contactEmail: dbRecord.contactEmail,
+          wallet: dbRecord.wallet,
+          approved: dbRecord.approved,
+          timestamp: dbRecord.createdAt.getTime(),
+        },
         txHash: onChainTxHash,
       });
     }
@@ -189,7 +188,9 @@ export async function POST(req: NextRequest) {
     // ----------------------------------------------------
     if (action === "approve") {
       const targetId = Number(requestId);
-      const reqRecord = localRequests.find((r) => r.requestId === targetId);
+      const reqRecord = await prisma.accessRequest.findUnique({
+        where: { requestId: targetId },
+      });
 
       // Attempt on-chain approval if applicable
       try {
@@ -200,17 +201,16 @@ export async function POST(req: NextRequest) {
         console.warn("On-chain approveAccessRequest warning:", chainErr);
       }
 
-      const index = localRequests.findIndex((r) => r.requestId === targetId);
-      if (index >= 0) {
-        localRequests[index].approved = true;
-        writeLocalRequests(localRequests);
-      }
+      await prisma.accessRequest.updateMany({
+        where: { requestId: targetId },
+        data: { approved: true, status: "approved" },
+      });
 
-      // Generate random high-entropy secret access code, store bcrypt hash
+      // Generate random high-entropy secret access code, store bcrypt hash in database
       let secretAccessCode = "";
       if (reqRecord) {
-        secretAccessCode = generateAndStoreAccessCode(
-          reqRecord.entityType,
+        secretAccessCode = await generateAndStoreAccessCode(
+          reqRecord.entityType as "university" | "company",
           targetId,
           reqRecord.proposedCode,
           reqRecord.name,
@@ -234,7 +234,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Missing entity details for code generation" }, { status: 400 });
       }
 
-      const secretAccessCode = generateAndStoreAccessCode(
+      const secretAccessCode = await generateAndStoreAccessCode(
         entityType || "university",
         Number(entityId) || 1,
         codeIdentifier,
@@ -252,16 +252,20 @@ export async function POST(req: NextRequest) {
     // Admin Action: Reject / Dismiss Request
     // ----------------------------------------------------
     if (action === "reject" || action === "delete") {
-      const filtered = localRequests.filter((r) => r.requestId !== Number(requestId));
-      writeLocalRequests(filtered);
-      return NextResponse.json({ success: true, requests: filtered });
+      await prisma.accessRequest.deleteMany({
+        where: { requestId: Number(requestId) },
+      });
+      const remaining = await prisma.accessRequest.findMany({
+        orderBy: { requestId: "asc" },
+      });
+      return NextResponse.json({ success: true, requests: remaining });
     }
 
     // ----------------------------------------------------
     // Admin Action: Clear All Requests
     // ----------------------------------------------------
     if (action === "clear_all") {
-      writeLocalRequests([]);
+      await prisma.accessRequest.deleteMany({});
       return NextResponse.json({ success: true, requests: [] });
     }
 

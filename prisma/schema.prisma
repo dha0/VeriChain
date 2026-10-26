@@ -1,0 +1,210 @@
+// VeriChain Decentralized Credential & State Verification System
+// Prisma Database Schema for PostgreSQL (Neon / Supabase / Vercel Postgres)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// 1. INSTITUTION ACCESS CREDENTIALS
+// Stores salted bcrypt hashes of access codes for accredited universities & hiring partners.
+// Plaintext codes are generated once and never persisted.
+// -----------------------------------------------------------------------------
+model InstitutionCredential {
+  id             String   @id @default(cuid())
+  entityType     String   // "university" | "company"
+  entityId       Int      // On-chain entity identifier
+  codeIdentifier String   // Public code e.g. "VTU-KA-001", "INFY-KA-001"
+  name           String   // Legal institutional name
+  wallet         String   // Authorized administrative Web3 wallet
+  hashedCode     String   // Salted bcrypt hash of secret access passkey
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([entityType, codeIdentifier])
+  @@index([entityType, wallet])
+}
+
+// -----------------------------------------------------------------------------
+// 2. INSTITUTIONAL ON-CHAIN ACCESS REQUESTS
+// Tracks public onboarding submissions and platform administrative approval status.
+// -----------------------------------------------------------------------------
+model AccessRequest {
+  id           Int      @id @default(autoincrement())
+  requestId    Int      @unique
+  entityType   String   // "university" | "company"
+  name         String
+  proposedCode String   @unique
+  contactEmail String
+  wallet       String
+  approved     Boolean  @default(false)
+  status       String   @default("pending") // "pending" | "approved" | "rejected"
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([status])
+}
+
+// -----------------------------------------------------------------------------
+// 3. CANDIDATE STUDENT PROFILES
+// Mandatory registration of student records by universities, binding official email.
+// -----------------------------------------------------------------------------
+model StudentProfile {
+  id             Int      @id @default(autoincrement())
+  usn            String   @unique // Candidate USN (e.g. "1RV21CS001")
+  name           String
+  email          String   @unique // Official registered candidate email (used as the only OTP destination)
+  course         String   @default("Computer Science")
+  gradYear       Int
+  totalMarks     Float?   @default(0.0)
+  maxTotalMarks  Float?   @default(0.0)
+  percentage     Float    @default(0.0)
+  marksVersion   Int      @default(1)
+  marksHash      String?  // keccak-256 hash committed on-chain
+  universityId   Int      // On-chain university authority ID
+  universityCode String?
+  collegeCode    String?  // Standardized 2-letter college code (e.g. "RV")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  marks          StudentMark[]
+  markVersions   StudentMarkVersion[]
+
+  @@index([universityId])
+  @@index([collegeCode])
+}
+
+// -----------------------------------------------------------------------------
+// 3A. STUDENT SUBJECT-WISE MARKS
+// Detailed marks breakdown per subject per student per semester & version.
+// -----------------------------------------------------------------------------
+model StudentMark {
+  id            Int      @id @default(autoincrement())
+  usn           String
+  student       StudentProfile @relation(fields: [usn], references: [usn], onDelete: Cascade)
+  version       Int      @default(1)
+  semester      Int      @default(1)
+  subjectCode   String   // e.g. "21CS51"
+  subjectName   String   // e.g. "Automata Theory and Compiler Design"
+  internalMarks Float?   @default(0.0)
+  externalMarks Float?   @default(0.0)
+  total         Float    @default(0.0)
+  maxMarks      Float    @default(100.0)
+  grade         String?  // "A+", "A", "B", "C", "D", "E", "F"
+  result        String?  // "PASS" | "FAIL"
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([usn])
+  @@index([usn, semester])
+  @@index([usn, version])
+  @@unique([usn, semester, subjectCode, version])
+}
+
+// -----------------------------------------------------------------------------
+// 3B. STUDENT MARKS HISTORICAL VERSIONS
+// Audit trail of marks versions, computed totals, percentage, and on-chain hash.
+// -----------------------------------------------------------------------------
+model StudentMarkVersion {
+  id            Int      @id @default(autoincrement())
+  usn           String
+  student       StudentProfile @relation(fields: [usn], references: [usn], onDelete: Cascade)
+  version       Int
+  semester      Int      @default(1)
+  totalMarks    Float
+  maxTotalMarks Float
+  percentage    Float
+  marksHash     String   // 32-byte Keccak-256 hash committed on-chain
+  status        String   @default("superseded") // "active" | "superseded"
+  txHash        String?  // On-chain transaction receipt hash
+  changedBy     String   // Entity identifier or wallet (e.g. "college:RV")
+  remarks       String?
+  createdAt     DateTime @default(now())
+
+  @@unique([usn, version])
+  @@index([usn])
+}
+
+// -----------------------------------------------------------------------------
+// 4. STUDENT WEB3 WALLET BINDINGS (SIWE)
+// Enforces 1-to-1 cryptographic linkage between candidate USN and their MetaMask wallet.
+// -----------------------------------------------------------------------------
+model StudentWalletLink {
+  id       String   @id @default(cuid())
+  usn      String   @unique // Unique: Enforces 1 student has at most 1 wallet
+  wallet   String   @unique // Unique: Prevents 1 wallet claiming multiple students
+  linkedAt DateTime @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// 5. STUDENT CO-CURRICULAR & CERTIFICATION ACHIEVEMENTS
+// Decentralized candidate achievement records verified by university authorities.
+// -----------------------------------------------------------------------------
+model StudentAchievement {
+  id                    Int       @id @default(autoincrement())
+  achievementId         Int       @unique
+  studentId             Int
+  studentUSN           String
+  collegeCode           String?   // Derived from student USN (e.g. "RV") for strict college queue isolation
+  title                 String
+  issuerOrg             String
+  category              String    // "Certification" | "Hackathon" | "Research"
+  documentHash          String
+  ipfsCID               String
+  submittedAt           DateTime  @default(now())
+  reviewedAt            DateTime?
+  reviewingUniversityId Int?
+  status                String    @default("pending") // "pending" | "verified" | "rejected"
+  reviewRemarks         String?
+  txHash                String?   // On-chain endorsement transaction hash
+
+  @@index([studentUSN])
+  @@index([collegeCode])
+  @@index([status])
+}
+
+// -----------------------------------------------------------------------------
+// 6. STUDENT SINGLE-USE EMAIL OTPS
+// Ephemeral 6-digit verification codes with rate-limiting (max 5 failed attempts) and expiry.
+// -----------------------------------------------------------------------------
+model StudentOTP {
+  id             String   @id @default(cuid())
+  usn            String   @unique
+  code           String   // 6-digit OTP
+  expiresAt      DateTime
+  failedAttempts Int      @default(0) // Invalidated permanently upon reaching 5
+  createdAt      DateTime @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// 7. SIWE CRYPTOGRAPHIC CHALLENGE NONCES
+// Single-use nonces to eliminate replay attacks across serverless instances.
+// -----------------------------------------------------------------------------
+model AuthNonce {
+  id        String   @id @default(cuid())
+  wallet    String
+  nonce     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([wallet, expiresAt])
+}
+
+// -----------------------------------------------------------------------------
+// 8. DISTRIBUTED RATE-LIMITING & TEMPORARY LOCKOUT COUNTERS
+// Prevents brute-force attacks across serverless instances (5 failures -> 15 min lockout).
+// -----------------------------------------------------------------------------
+model RateLimitCounter {
+  id              String    @id @default(cuid())
+  key             String    @unique // e.g. "ip:codeIdentifier" or "ip:wallet"
+  count           Int       @default(0)
+  firstAttemptAt  DateTime  @default(now())
+  lockedUntil     DateTime?
+  updatedAt       DateTime  @updatedAt
+}

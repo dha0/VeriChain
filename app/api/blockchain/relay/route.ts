@@ -1,15 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ethers } from "ethers";
 import { getServerContract, getReadOnlyServerContract } from "@/lib/serverContract";
-import { getServerSession } from "@/lib/serverAuth";
+import { getServerSession, upsertStudentProfile } from "@/lib/serverAuth";
 import { SUPPORTED_CHAIN_ID } from "@/contracts/contractAddress";
+import { parseAndValidateUSN } from "@/lib/usnParser";
+
+/**
+ * Startup validation: If RELAY_SECRET_KEY is configured in environment, it must have at least 32 characters.
+ */
+const startupRelaySecret = process.env.RELAY_SECRET_KEY?.trim();
+if (startupRelaySecret && startupRelaySecret.length < 32) {
+  throw new Error(
+    "CRITICAL SECURITY CONFIGURATION ERROR: RELAY_SECRET_KEY must be at least 32 characters long."
+  );
+}
 
 /**
  * Validates request authorization.
  * Allows either configured RELAY_SECRET_KEY header OR a valid server-side JWT session cookie.
- * RELAY_SECRET_KEY must come exclusively from environment with NO default fallback.
+ * RELAY_SECRET_KEY must come exclusively from environment with NO default fallback and minimum 32 chars.
  */
 async function authorizeRelayCall(req: NextRequest, action: string) {
   const relaySecret = process.env.RELAY_SECRET_KEY?.trim();
+  if (relaySecret && relaySecret.length < 32) {
+    throw new Error(
+      "CRITICAL SECURITY CONFIGURATION ERROR: RELAY_SECRET_KEY must be at least 32 characters long."
+    );
+  }
   const headerSecret =
     req.headers.get("x-relay-secret") ||
     req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
@@ -96,9 +113,9 @@ export async function POST(req: NextRequest) {
     // 1. REGISTER STUDENT
     // -------------------------------------------------------------------------
     if (action === "registerStudent") {
-      const { usn, name, course, gradYear, percentage } = data || {};
-      if (!usn || !name) {
-        return NextResponse.json({ error: "Candidate USN and Name are required" }, { status: 400 });
+      const { usn, name, email, course, gradYear, percentage } = data || {};
+      if (!usn || !name || !email) {
+        return NextResponse.json({ error: "Candidate USN, Name, and University-Registered Email are required" }, { status: 400 });
       }
 
       // CRITICAL SECURITY: Take university ID strictly from verified session, never trust body universityCode
@@ -128,7 +145,34 @@ export async function POST(req: NextRequest) {
           const uIdBig = await getReadOnlyServerContract().universityCodeToId(universityCode.trim().toUpperCase());
           uId = Number(uIdBig);
         }
-        if (!uId || uId <= 0) uId = 1;
+        if (!uId || uId <= 0) {
+          return NextResponse.json(
+            { error: "Bad Request: Admin caller must specify a valid target universityId or universityCode." },
+            { status: 400 }
+          );
+        }
+      }
+
+      const cleanUsn = usn.trim().toUpperCase();
+      const parsedUsn = parseAndValidateUSN(cleanUsn);
+      if (!parsedUsn.valid) {
+        return NextResponse.json(
+          { error: `Invalid USN format: ${parsedUsn.error}` },
+          { status: 400 }
+        );
+      }
+
+      // Enforce: USN college code must equal registering college's code from verified session
+      const sessionCollegeCode = authCheck.session?.role === "university"
+        ? (authCheck.session.entityInfo?.code || "").trim().toUpperCase()
+        : "";
+      if (sessionCollegeCode && parsedUsn.collegeCode !== sessionCollegeCode) {
+        return NextResponse.json(
+          {
+            error: `Forbidden: USN college code '${parsedUsn.collegeCode}' does not match registering college code '${sessionCollegeCode}'.`,
+          },
+          { status: 403 }
+        );
       }
 
       const { contract } = getServerContract("university");
@@ -140,22 +184,51 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const cleanUsn = usn.trim().toUpperCase();
+      // Enforce: USN college code must also equal on-chain registering college's code
+      const registeredCollegeCode = (univData.universityCode || "").trim().toUpperCase();
+      if (registeredCollegeCode && parsedUsn.collegeCode !== registeredCollegeCode) {
+        return NextResponse.json(
+          {
+            error: `Forbidden: USN college code '${parsedUsn.collegeCode}' does not match registering college code '${registeredCollegeCode}'.`,
+          },
+          { status: 403 }
+        );
+      }
+
+      const studentEmail = email?.trim() || `${cleanUsn.toLowerCase()}@student.verichain.network`;
       const existingId = Number(await contract.usnToStudentId(cleanUsn));
+
+      // Always persist/update student profile with university-registered email and collegeCode in PostgreSQL
+      await upsertStudentProfile({
+        usn: cleanUsn,
+        name: name.trim(),
+        email: studentEmail.toLowerCase(),
+        course: course || "Computer Science",
+        gradYear: gradYear || new Date().getFullYear(),
+        percentage: Number(percentage) || 0,
+        universityId: uId,
+        universityCode: univData.universityCode || "",
+        collegeCode: parsedUsn.collegeCode,
+      });
+
       if (existingId > 0) {
         return NextResponse.json(
-          { success: true, studentId: existingId, message: "Student already registered" },
+          { success: true, studentId: existingId, message: "Student already registered and profile synced" },
           { status: 200 }
         );
       }
 
-      const tx = await contract.registerStudentByUniversity(
+      // Cryptographic marks hash: Store only hash on-chain, never plain percentage
+      const marksPayload = `${cleanUsn}:${percentage ?? 0}`;
+      const marksHash = ethers.keccak256(ethers.toUtf8Bytes(marksPayload));
+
+      const tx = await contract.registerStudent(
         uId,
         cleanUsn,
         name.trim(),
         course || "Computer Science",
         gradYear || new Date().getFullYear(),
-        Math.min(100, Math.max(0, Number(percentage) || 0))
+        marksHash
       );
       const receipt = await tx.wait();
       const newStudentId = Number(await contract.usnToStudentId(cleanUsn));
@@ -205,7 +278,12 @@ export async function POST(req: NextRequest) {
           const uIdBig = await getReadOnlyServerContract().universityCodeToId(universityCode.trim().toUpperCase());
           uId = Number(uIdBig);
         }
-        if (!uId || uId <= 0) uId = 1;
+        if (!uId || uId <= 0) {
+          return NextResponse.json(
+            { error: "Bad Request: Admin caller must specify a valid target universityId or universityCode." },
+            { status: 400 }
+          );
+        }
       }
 
       const { contract } = getServerContract("university");
@@ -329,7 +407,12 @@ export async function POST(req: NextRequest) {
           const uIdBig = await getReadOnlyServerContract().universityCodeToId(universityCode.trim().toUpperCase());
           uId = Number(uIdBig);
         }
-        if (!uId || uId <= 0) uId = 1;
+        if (!uId || uId <= 0) {
+          return NextResponse.json(
+            { error: "Bad Request: Admin caller must specify a valid target universityId or universityCode." },
+            { status: 400 }
+          );
+        }
       }
 
       const { contract } = getServerContract("university");
@@ -366,6 +449,14 @@ export async function POST(req: NextRequest) {
         }
       } else if (authCheck.role === "admin") {
         targetUsn = (usn || "").trim().toUpperCase();
+      }
+
+      const parsedUsn = parseAndValidateUSN(targetUsn);
+      if (!parsedUsn.valid) {
+        return NextResponse.json(
+          { error: `Invalid USN format: ${parsedUsn.error}` },
+          { status: 400 }
+        );
       }
 
       const { contract } = getServerContract("admin");
@@ -417,7 +508,12 @@ export async function POST(req: NextRequest) {
           const cIdBig = await getReadOnlyServerContract().companyCodeToId(companyCode.trim().toUpperCase());
           cId = Number(cIdBig);
         }
-        if (!cId || cId <= 0) cId = 1;
+        if (!cId || cId <= 0) {
+          return NextResponse.json(
+            { error: "Bad Request: Admin caller must specify a valid target companyId or companyCode." },
+            { status: 400 }
+          );
+        }
       }
 
       const { contract } = getServerContract("company");

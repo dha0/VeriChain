@@ -121,6 +121,19 @@
     "inputs": [
       {
         "indexed": true,
+        "internalType": "address",
+        "name": "newRelayer",
+        "type": "address"
+      }
+    ],
+    "name": "AuthorizedRelayerUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
         "internalType": "uint256",
         "name": "companyId",
         "type": "uint256"
@@ -368,6 +381,49 @@
         "type": "string"
       },
       {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "universityId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "oldMarksHash",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "newMarksHash",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "timestamp",
+        "type": "uint256"
+      }
+    ],
+    "name": "StudentMarksUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "studentId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "string",
+        "name": "usn",
+        "type": "string"
+      },
+      {
         "indexed": false,
         "internalType": "string",
         "name": "name",
@@ -378,6 +434,12 @@
         "internalType": "uint256",
         "name": "universityId",
         "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "marksHash",
+        "type": "bytes32"
       }
     ],
     "name": "StudentRegistered",
@@ -402,6 +464,12 @@
         "indexed": false,
         "internalType": "string",
         "name": "universityCode",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "affiliatingUniversity",
         "type": "string"
       },
       {
@@ -622,6 +690,19 @@
       }
     ],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "authorizedRelayer",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -1190,9 +1271,9 @@
         "type": "uint16"
       },
       {
-        "internalType": "uint256",
-        "name": "percentage",
-        "type": "uint256"
+        "internalType": "bytes32",
+        "name": "marksHash",
+        "type": "bytes32"
       },
       {
         "internalType": "uint256",
@@ -1250,6 +1331,11 @@
       {
         "internalType": "string",
         "name": "universityCode",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "affiliatingUniversity",
         "type": "string"
       },
       {
@@ -1357,6 +1443,11 @@
     "inputs": [
       {
         "internalType": "uint256",
+        "name": "_collegeId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
         "name": "_studentId",
         "type": "uint256"
       },
@@ -1391,7 +1482,7 @@
     "inputs": [
       {
         "internalType": "uint256",
-        "name": "_universityId",
+        "name": "_collegeId",
         "type": "uint256"
       },
       {
@@ -1428,6 +1519,30 @@
   },
   {
     "inputs": [
+      {
+        "internalType": "string",
+        "name": "_usn",
+        "type": "string"
+      }
+    ],
+    "name": "parseAndValidateUSN",
+    "outputs": [
+      {
+        "internalType": "string",
+        "name": "collegeCode",
+        "type": "string"
+      }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "_collegeId",
+        "type": "uint256"
+      },
       {
         "internalType": "uint256",
         "name": "_credentialId",
@@ -1510,6 +1625,11 @@
   {
     "inputs": [
       {
+        "internalType": "uint256",
+        "name": "_collegeId",
+        "type": "uint256"
+      },
+      {
         "internalType": "string",
         "name": "_usn",
         "type": "string"
@@ -1530,9 +1650,9 @@
         "type": "uint16"
       },
       {
-        "internalType": "uint256",
-        "name": "_percentage",
-        "type": "uint256"
+        "internalType": "bytes32",
+        "name": "_marksHash",
+        "type": "bytes32"
       }
     ],
     "name": "registerStudent",
@@ -1550,7 +1670,7 @@
     "inputs": [
       {
         "internalType": "uint256",
-        "name": "_universityId",
+        "name": "_collegeId",
         "type": "uint256"
       },
       {
@@ -1574,12 +1694,46 @@
         "type": "uint16"
       },
       {
-        "internalType": "uint256",
-        "name": "_percentage",
-        "type": "uint256"
+        "internalType": "bytes32",
+        "name": "_marksHash",
+        "type": "bytes32"
       }
     ],
     "name": "registerStudentByUniversity",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "_name",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "_universityCode",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "_affiliatingUniversity",
+        "type": "string"
+      },
+      {
+        "internalType": "address",
+        "name": "_wallet",
+        "type": "address"
+      }
+    ],
+    "name": "registerUniversity",
     "outputs": [
       {
         "internalType": "uint256",
@@ -1667,7 +1821,7 @@
       },
       {
         "internalType": "uint256",
-        "name": "_universityId",
+        "name": "_collegeId",
         "type": "uint256"
       },
       {
@@ -1690,6 +1844,11 @@
     "inputs": [
       {
         "internalType": "uint256",
+        "name": "_collegeId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
         "name": "_credentialId",
         "type": "uint256"
       },
@@ -1700,6 +1859,19 @@
       }
     ],
     "name": "revokeCredential",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_relayer",
+        "type": "address"
+      }
+    ],
+    "name": "setAuthorizedRelayer",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -1740,9 +1912,9 @@
         "type": "uint16"
       },
       {
-        "internalType": "uint256",
-        "name": "percentage",
-        "type": "uint256"
+        "internalType": "bytes32",
+        "name": "marksHash",
+        "type": "bytes32"
       },
       {
         "internalType": "uint256",
@@ -1806,6 +1978,11 @@
     "inputs": [
       {
         "internalType": "uint256",
+        "name": "_collegeId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
         "name": "_credentialId",
         "type": "uint256"
       },
@@ -1843,6 +2020,11 @@
       {
         "internalType": "string",
         "name": "universityCode",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "affiliatingUniversity",
         "type": "string"
       },
       {
@@ -1895,6 +2077,35 @@
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "_collegeId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "string",
+        "name": "_usn",
+        "type": "string"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "_newMarkHash",
+        "type": "bytes32"
+      }
+    ],
+    "name": "updateStudentMarks",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -1963,84 +2174,6 @@
       }
     ],
     "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "string",
-        "name": "_usn",
-        "type": "string"
-      }
-    ],
-    "name": "verifyCredentialQuick",
-    "outputs": [
-      {
-        "internalType": "bool",
-        "name": "isValid",
-        "type": "bool"
-      },
-      {
-        "internalType": "uint256",
-        "name": "studentId",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "latestCredentialId",
-        "type": "uint256"
-      },
-      {
-        "internalType": "string",
-        "name": "documentType",
-        "type": "string"
-      },
-      {
-        "internalType": "enum ITHiringMarksVerification.CredentialStatus",
-        "name": "status",
-        "type": "uint8"
-      }
-    ],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "_credentialId",
-        "type": "uint256"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "_uploadedDocHash",
-        "type": "bytes32"
-      }
-    ],
-    "name": "verifyCredentialWithHash",
-    "outputs": [
-      {
-        "internalType": "bool",
-        "name": "isAuthentic",
-        "type": "bool"
-      },
-      {
-        "internalType": "bool",
-        "name": "hashMatched",
-        "type": "bool"
-      },
-      {
-        "internalType": "string",
-        "name": "documentType",
-        "type": "string"
-      },
-      {
-        "internalType": "enum ITHiringMarksVerification.CredentialStatus",
-        "name": "status",
-        "type": "uint8"
-      }
-    ],
-    "stateMutability": "nonpayable",
     "type": "function"
   }
 ]

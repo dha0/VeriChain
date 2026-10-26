@@ -37,3 +37,4 @@ yarn-error.log*
 .access_credentials.json
 .access_requests.json
 .student_achievements.json
+.student_wallets.json

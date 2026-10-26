@@ -1,0 +1,4 @@
+USN,Name,Email,Course,GraduationYear,Semester,SubjectCode,SubjectName,InternalMarks,ExternalMarks,MaxMarks
+1RV21CS001,Alice Sharma,alice.sharma@rvce.edu.in,Computer Science,2025,5,21CS51,Automata Theory,45,45,100
+1RV21CS001,Alice Sharma,alice.sharma@rvce.edu.in,Computer Science,2025,5,21CS52,Computer Networks,42,48,100
+1RV21CS002,Bob Kumar,bob.kumar@rvce.edu.in,Information Science,2025,5,21IS51,Operating Systems,40,42,100

@@ -736,19 +736,6 @@ export default function AdminPage() {
                   <Building2 className="w-5 h-5 text-sky-400" />
                   <span>Direct Accredit University</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setUName("Visvesvaraya Technological University");
-                      setUCode("VTU-KA-001");
-                      setUWallet("");
-                    }}
-                    className="px-2 py-0.5 rounded bg-sky-900/60 hover:bg-sky-800/80 border border-sky-600/40 text-[10px] font-mono text-sky-300 transition-colors font-semibold"
-                  >
-                    ⚡ Fill VTU Demo
-                  </button>
-                </div>
               </div>
 
               <form onSubmit={handleRegisterUniversity} className="space-y-3">
@@ -851,19 +838,6 @@ export default function AdminPage() {
                   <Briefcase className="w-5 h-5 text-emerald-400" />
                   <span>Direct Authorize Company</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCCName("Infosys Technologies Ltd");
-                      setCCode("INFY-BLR-01");
-                      setCWallet("");
-                    }}
-                    className="px-2 py-0.5 rounded bg-emerald-900/60 hover:bg-emerald-800/80 border border-emerald-600/40 text-[10px] font-mono text-emerald-300 transition-colors font-semibold"
-                  >
-                    ⚡ Fill Infosys Demo
-                  </button>
-                </div>
               </div>
 
               <form onSubmit={handleRegisterCompany} className="space-y-3">
@@ -925,7 +899,13 @@ export default function AdminPage() {
               </div>
               <div className="divide-y divide-indigo-700/30 max-h-80 overflow-y-auto">
                 {companies.length === 0 ? (
-                  <div className="text-xs text-indigo-300/50 py-6 text-center">No companies authorized yet.</div>
+                  <div className="text-center py-10 px-4 border border-dashed border-emerald-800/40 rounded-2xl bg-slate-950/40">
+                    <Briefcase className="w-9 h-9 text-emerald-500/40 mx-auto mb-2" />
+                    <p className="text-xs font-semibold text-white">No Hiring Partners Authorized Yet</p>
+                    <p className="text-[11px] text-slate-400 mt-1 max-w-xs mx-auto">
+                      Authorize corporate recruiter accounts using the form on the left.
+                    </p>
+                  </div>
                 ) : (
                   companies.map((c) => (
                     <div key={c.id} className="py-3 flex items-center justify-between gap-2 text-xs">
