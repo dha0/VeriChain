@@ -179,31 +179,33 @@ export const Navbar: React.FC = () => {
           {/* User Auth, Network Pill & Theme Switcher Actions */}
           <div className="flex items-center gap-2.5 sm:gap-3">
             {/* MetaMask Network Status / Switcher Button */}
-            {currentChainId !== null && (
-              <button
-                type="button"
-                onClick={handleNetworkClick}
-                disabled={isSwitching}
-                title={isCorrectNetwork ? "Connected to Ethereum Sepolia" : "Click to switch to Sepolia"}
-                className={`hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-semibold border transition-all ${
-                  isCorrectNetwork
-                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20"
-                    : "bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/50 hover:bg-rose-500/30 animate-pulse"
-                }`}
-              >
-                {isCorrectNetwork ? (
-                  <>
-                    <Radio className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
-                    <span>Sepolia (11155111)</span>
-                  </>
-                ) : (
-                  <>
-                    <AlertTriangle className="w-3 h-3 text-rose-500 dark:text-rose-400" />
-                    <span>Switch to Sepolia</span>
-                  </>
-                )}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={handleNetworkClick}
+              disabled={isSwitching}
+              title={
+                currentChainId === null || isCorrectNetwork
+                  ? "Target Network: Ethereum Sepolia (11155111)"
+                  : "Click to switch to Sepolia"
+              }
+              className={`hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-semibold border transition-all ${
+                currentChainId === null || isCorrectNetwork
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20"
+                  : "bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/50 hover:bg-rose-500/30 animate-pulse"
+              }`}
+            >
+              {currentChainId === null || isCorrectNetwork ? (
+                <>
+                  <Radio className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
+                  <span>Sepolia (11155111)</span>
+                </>
+              ) : (
+                <>
+                  <AlertTriangle className="w-3 h-3 text-rose-500 dark:text-rose-400" />
+                  <span>Switch to Sepolia</span>
+                </>
+              )}
+            </button>
 
             {/* Mode Changer: Dark Mode & Light Mode Toggle */}
             <button
