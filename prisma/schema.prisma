@@ -39,7 +39,7 @@ model AccessRequest {
   requestId    Int      @unique
   entityType   String   // "university" | "company"
   name         String
-  proposedCode String   @unique
+  proposedCode String
   contactEmail String
   wallet       String
   approved     Boolean  @default(false)
@@ -48,6 +48,7 @@ model AccessRequest {
   updatedAt    DateTime @updatedAt
 
   @@index([status])
+  @@index([proposedCode])
 }
 
 // -----------------------------------------------------------------------------

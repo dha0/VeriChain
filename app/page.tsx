@@ -18,27 +18,27 @@ import { SystemCounters } from "@/types";
 
 export default function HomePage() {
   const [counters, setCounters] = useState<SystemCounters>({
-    totalUniversities: 2,
-    totalStudents: 1,
-    totalCredentials: 1,
-    totalCompanies: 2,
+    totalUniversities: 0,
+    totalStudents: 0,
+    totalCredentials: 0,
+    totalCompanies: 0,
     totalVerifications: 0,
   });
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function loadStats() {
-      // 1. Try server-side cached API for lightning-fast live count
+      // 1. Try server-side cached API for live count synchronized with Admin Console
       try {
         const apiRes = await fetch("/api/blockchain/stats");
         if (apiRes.ok) {
           const data = await apiRes.json();
           setCounters({
-            totalUniversities: Number(data.universities ?? 2),
-            totalStudents: Number(data.students ?? 1),
-            totalCredentials: Number(data.credentials ?? 1),
-            totalCompanies: Number(data.companies ?? 2),
-            totalVerifications: Number(data.verifications ?? 0),
+            totalUniversities: Number(data.universities || 0),
+            totalStudents: Number(data.students || 0),
+            totalCredentials: Number(data.credentials || 0),
+            totalCompanies: Number(data.companies || 0),
+            totalVerifications: Number(data.verifications || 0),
           });
           setIsLoading(false);
           return;
@@ -51,11 +51,33 @@ export default function HomePage() {
       try {
         const contract = getContractReadOnly();
         const res = await contract.getCounters();
+        const totalU = Number(res.totalUniversities);
+        const totalC = Number(res.totalCompanies);
+
+        const LEGACY_TEST_CODES = new Set(["TEST-UNI-001", "CIT", "CIT0107", "INFY-BLR-01", "TCS-MUM-01"]);
+        let validU = 0;
+        for (let i = 1; i <= totalU; i++) {
+          try {
+            const u = await contract.getUniversity(i);
+            const code = (u.universityCode || "").trim().toUpperCase();
+            if (code && !code.startsWith("0x") && !LEGACY_TEST_CODES.has(code)) validU++;
+          } catch {}
+        }
+
+        let validC = 0;
+        for (let i = 1; i <= totalC; i++) {
+          try {
+            const c = await contract.getCompany(i);
+            const code = (c.companyCode || "").trim().toUpperCase();
+            if (code && !code.startsWith("0x") && !LEGACY_TEST_CODES.has(code)) validC++;
+          } catch {}
+        }
+
         setCounters({
-          totalUniversities: Number(res.totalUniversities),
+          totalUniversities: validU,
           totalStudents: Number(res.totalStudents),
           totalCredentials: Number(res.totalCredentials),
-          totalCompanies: Number(res.totalCompanies),
+          totalCompanies: validC,
           totalVerifications: Number(res.totalVerifications),
         });
       } catch (e) {

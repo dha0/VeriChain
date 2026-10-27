@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-// Cache in memory for 15 seconds to avoid rate limiting public RPCs
+// Cache in memory for 5 seconds to keep stats synchronized while avoiding RPC rate limits
 let cachedStats: {
   universities: number;
   companies: number;
@@ -15,7 +15,8 @@ let cachedStats: {
   timestamp: number;
 } | null = null;
 
-const CACHE_TTL_MS = 15_000;
+const CACHE_TTL_MS = 5_000;
+const LEGACY_TEST_CODES = new Set(["TEST-UNI-001", "CIT", "CIT0107", "INFY-BLR-01", "TCS-MUM-01"]);
 
 export async function GET() {
   const now = Date.now();
@@ -30,44 +31,72 @@ export async function GET() {
     const contract = getReadOnlyServerContract();
 
     // Query on-chain statistics
-    let universities = 0;
-    let students = 0;
-    let credentials = 0;
-    let companies = 0;
-    let verifications = 0;
+    const counters = await contract.getCounters();
+    const totalU = Number(counters[0]);
+    const totalS = Number(counters[1]);
+    const totalCred = Number(counters[2]);
+    const totalC = Number(counters[3]);
+    const totalV = Number(counters[4]);
 
-    try {
-      const stats = await contract.getAllStats();
-      universities = Number(stats[0]);
-      students = Number(stats[1]);
-      credentials = Number(stats[2]);
-      companies = Number(stats[4]);
-      verifications = Number(stats[5]);
-    } catch {
-      // Fallback to getCounters if getAllStats fails
-      const counters = await contract.getCounters();
-      universities = Number(counters[0]);
-      students = Number(counters[1]);
-      credentials = Number(counters[2]);
-      companies = Number(counters[3]);
-      verifications = Number(counters[4]);
+    // Gather valid universities (excluding legacy test entities)
+    const validUniCodes = new Set<string>();
+    for (let i = 1; i <= totalU; i++) {
+      try {
+        const u = await contract.getUniversity(i);
+        const code = (u.universityCode || "").trim().toUpperCase();
+        if (code && !code.startsWith("0x") && !LEGACY_TEST_CODES.has(code)) {
+          validUniCodes.add(code);
+        }
+      } catch {}
     }
 
-    // Synchronize with active credentials in database to exclude old defunct test numbers
+    // Gather valid hiring partners (excluding legacy test entities)
+    const validCompanyCodes = new Set<string>();
+    for (let i = 1; i <= totalC; i++) {
+      try {
+        const c = await contract.getCompany(i);
+        const code = (c.companyCode || "").trim().toUpperCase();
+        if (code && !code.startsWith("0x") && !LEGACY_TEST_CODES.has(code)) {
+          validCompanyCodes.add(code);
+        }
+      } catch {}
+    }
+
+    // Include institutions accredited in database
     try {
       const dbInstitutions = await prisma.institutionCredential.findMany();
-      const validUnis = dbInstitutions.filter((i: any) => i.entityType === "university").length;
-      const validComps = dbInstitutions.filter((i: any) => i.entityType === "company").length;
-      if (validUnis > 0) universities = validUnis;
-      if (validComps > 0) companies = validComps;
+      for (const inst of dbInstitutions) {
+        const code = (inst.codeIdentifier || "").trim().toUpperCase();
+        if (code && !LEGACY_TEST_CODES.has(code)) {
+          if (inst.entityType === "university") {
+            validUniCodes.add(code);
+          } else {
+            validCompanyCodes.add(code);
+          }
+        }
+      }
+    } catch {}
+
+    // Students count (max of on-chain and database)
+    let students = totalS;
+    try {
+      const dbStudents = await prisma.studentProfile.count();
+      if (dbStudents > students) students = dbStudents;
+    } catch {}
+
+    // Credentials count
+    let credentials = totalCred;
+    try {
+      const dbCreds = await prisma.studentMark.count();
+      if (dbCreds > credentials) credentials = dbCreds;
     } catch {}
 
     cachedStats = {
-      universities,
-      companies,
+      universities: validUniCodes.size,
+      companies: validCompanyCodes.size,
       students,
       credentials,
-      verifications,
+      verifications: totalV,
       timestamp: now,
     };
 

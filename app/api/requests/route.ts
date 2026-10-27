@@ -56,7 +56,7 @@ export async function GET(req: NextRequest) {
 
   // 1. Fetch persistent requests from PostgreSQL via Prisma
   const dbRequests = await prisma.accessRequest.findMany({
-    orderBy: { requestId: "asc" },
+    orderBy: { requestId: "desc" },
   });
 
   const onChainList: AccessRequest[] = [];
@@ -77,7 +77,7 @@ export async function GET(req: NextRequest) {
           proposedCode: reqData.proposedCode,
           contactEmail: reqData.contactEmail,
           wallet: reqData.wallet,
-          approved: reqData.approved,
+          approved: Boolean(reqData.approved),
           timestamp: Number(reqData.timestamp) * 1000,
         });
       } catch {}
@@ -88,35 +88,31 @@ export async function GET(req: NextRequest) {
 
   // Check persistent credentials to know which institutions are already fully approved & registered
   const dbInstitutions = await prisma.institutionCredential.findMany();
-  const registeredCodes = new Set(
-    dbInstitutions.map((i: any) => (i.codeIdentifier || "").trim().toUpperCase())
-  );
 
-  const map = new Map<string, AccessRequest>();
+  // Merge keyed STRICTLY by requestId so no requests are overwritten or dropped
+  const map = new Map<number, AccessRequest & { status?: string; dismissed?: boolean }>();
+
   for (const r of onChainList) {
-    const isReg = registeredCodes.has((r.proposedCode || "").trim().toUpperCase());
-    map.set(`code_${r.proposedCode.toUpperCase()}`, {
+    map.set(r.requestId, {
       ...r,
-      approved: r.approved || isReg,
+      approved: Boolean(r.approved),
     });
   }
 
   for (const r of dbRequests) {
-    const cleanCode = (r.proposedCode || "").trim().toUpperCase();
-    const key = `code_${cleanCode}`;
-    const isReg = registeredCodes.has(cleanCode);
-    const isApproved = Boolean(r.approved || r.status === "approved" || isReg);
-    const existing = map.get(key);
+    const isApproved = Boolean(r.approved || r.status === "approved");
+    const isDismissed = Boolean(r.status === "rejected" || r.status === "dismissed");
+    const existing = map.get(r.requestId);
 
     if (existing) {
-      if (isApproved) {
-        existing.approved = true;
-      }
-      if (r.contactEmail && !existing.contactEmail) {
-        existing.contactEmail = r.contactEmail;
-      }
+      if (isApproved) existing.approved = true;
+      if (isDismissed) existing.dismissed = true;
+      if (r.status) existing.status = r.status;
+      if (r.contactEmail) existing.contactEmail = r.contactEmail;
+      if (r.name) existing.name = r.name;
+      if (r.wallet && r.wallet !== "0x0000000000000000000000000000000000000000") existing.wallet = r.wallet;
     } else {
-      map.set(key, {
+      map.set(r.requestId, {
         requestId: r.requestId,
         entityType: r.entityType as any,
         name: r.name,
@@ -124,12 +120,17 @@ export async function GET(req: NextRequest) {
         contactEmail: r.contactEmail,
         wallet: r.wallet,
         approved: isApproved,
+        dismissed: isDismissed,
+        status: r.status,
         timestamp: r.createdAt.getTime(),
       });
     }
   }
 
-  const merged = Array.from(map.values());
+  const merged = Array.from(map.values())
+    .filter((r) => !r.dismissed && r.status !== "rejected" && r.status !== "dismissed")
+    .sort((a, b) => b.requestId - a.requestId);
+
   return NextResponse.json({
     requests: merged,
     dbInstitutions: dbInstitutions.map((i: any) => ({
@@ -161,6 +162,14 @@ export async function POST(req: NextRequest) {
       let onChainReqId: number | null = null;
       let onChainTxHash: string | null = null;
 
+      // Drop Postgres unique constraint if still lingering from old migrations
+      try {
+        await prisma.$executeRawUnsafe(
+          'ALTER TABLE "AccessRequest" DROP CONSTRAINT IF EXISTS "AccessRequest_proposedCode_key"; DROP INDEX IF EXISTS "AccessRequest_proposedCode_key";'
+        );
+      } catch {}
+
+      // Attempt on-chain requestAccess submission
       try {
         const { contract } = getServerContract("admin");
         const tx = await contract.requestAccess(
@@ -177,21 +186,21 @@ export async function POST(req: NextRequest) {
         console.warn("On-chain requestAccess submission warning:", chainErr);
       }
 
-      // Determine next requestId for database
+      // Determine next requestId across both DB and On-chain
+      let highestChainId = 0;
+      try {
+        const contract = getReadOnlyServerContract();
+        highestChainId = Number(await contract.getAccessRequestCount());
+      } catch {}
+
       const highestDbReq = await prisma.accessRequest.findFirst({
         orderBy: { requestId: "desc" },
       });
-      const nextId = onChainReqId || (highestDbReq ? highestDbReq.requestId + 1 : 1);
+      const highestDbId = highestDbReq ? highestDbReq.requestId : 0;
+      const nextId = onChainReqId || (Math.max(highestDbId, highestChainId) + 1);
 
-      const dbRecord = await prisma.accessRequest.upsert({
-        where: { proposedCode: cleanCode },
-        update: {
-          name: name.trim(),
-          contactEmail: contactEmail.trim(),
-          wallet: wallet || "0x0000000000000000000000000000000000000000",
-          entityType: entityType || "university",
-        },
-        create: {
+      const dbRecord = await prisma.accessRequest.create({
+        data: {
           requestId: nextId,
           entityType: entityType || "university",
           name: name.trim(),
@@ -322,20 +331,51 @@ export async function POST(req: NextRequest) {
     // Admin Action: Reject / Dismiss Request
     // ----------------------------------------------------
     if (action === "reject" || action === "delete") {
-      await prisma.accessRequest.deleteMany({
-        where: { requestId: Number(requestId) },
+      const targetId = Number(requestId);
+      await prisma.accessRequest.upsert({
+        where: { requestId: targetId },
+        update: { status: "rejected", approved: false },
+        create: {
+          requestId: targetId,
+          entityType: "university",
+          name: "Dismissed Request",
+          proposedCode: `DISMISSED-${targetId}`,
+          contactEmail: "",
+          wallet: "0x0000000000000000000000000000000000000000",
+          approved: false,
+          status: "rejected",
+        },
       });
-      const remaining = await prisma.accessRequest.findMany({
-        orderBy: { requestId: "asc" },
-      });
-      return NextResponse.json({ success: true, requests: remaining });
+      return NextResponse.json({ success: true, rejectedId: targetId });
     }
 
     // ----------------------------------------------------
     // Admin Action: Clear All Requests
     // ----------------------------------------------------
     if (action === "clear_all") {
-      await prisma.accessRequest.deleteMany({});
+      try {
+        const contract = getReadOnlyServerContract();
+        const total = Number(await contract.getAccessRequestCount());
+        for (let i = 1; i <= total; i++) {
+          await prisma.accessRequest.upsert({
+            where: { requestId: i },
+            update: { status: "dismissed", approved: false },
+            create: {
+              requestId: i,
+              entityType: "university",
+              name: "Dismissed Request",
+              proposedCode: `DISMISSED-${i}`,
+              contactEmail: "",
+              wallet: "0x0000000000000000000000000000000000000000",
+              approved: false,
+              status: "dismissed",
+            },
+          });
+        }
+      } catch {}
+      await prisma.accessRequest.updateMany({
+        data: { status: "dismissed" },
+      });
       return NextResponse.json({ success: true, requests: [] });
     }
 

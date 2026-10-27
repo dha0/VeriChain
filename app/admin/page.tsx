@@ -809,34 +809,13 @@ export default function AdminPage() {
 
   const pendingRequests = useMemo(() => {
     return accessRequests.filter((req) => {
-      // 1. Explicitly approved on-chain
-      if (req.approved) return false;
-
-      // 2. Check if already registered on the blockchain ledger
-      const targetCode = (req.proposedCode || "").trim().toUpperCase();
-      const targetName = (req.name || "").trim().toLowerCase();
-
-      if (req.entityType === "university") {
-        const codeMatch = universities.some(
-          (u) => (u.universityCode || "").trim().toUpperCase() === targetCode
-        );
-        const nameMatch = universities.some(
-          (u) => (u.name || "").trim().toLowerCase() === targetName
-        );
-        if (codeMatch || nameMatch) return false;
-      } else {
-        const codeMatch = companies.some(
-          (c) => (c.companyCode || "").trim().toUpperCase() === targetCode
-        );
-        const nameMatch = companies.some(
-          (c) => (c.name || "").trim().toLowerCase() === targetName
-        );
-        if (codeMatch || nameMatch) return false;
-      }
-
+      // 1. Explicitly approved
+      if (req.approved || (req as any).status === "approved") return false;
+      // 2. Explicitly dismissed / rejected
+      if ((req as any).dismissed || (req as any).status === "rejected" || (req as any).status === "dismissed") return false;
       return true;
     });
-  }, [accessRequests, universities, companies]);
+  }, [accessRequests]);
 
   return (
     <RoleGuard allowedRoles={["admin"]} portalName="System Admin Console">
@@ -1044,7 +1023,19 @@ export default function AdminPage() {
                           </span>
                         </td>
                         <td className="px-3 py-3 font-semibold text-white">{req.name}</td>
-                        <td className="px-3 py-3 font-mono font-bold text-cyan-300">{req.proposedCode}</td>
+                        <td className="px-3 py-3 font-mono font-bold text-cyan-300">
+                          <div className="flex items-center gap-1.5">
+                            <span>{req.proposedCode}</span>
+                            {(req.entityType === "university"
+                              ? universities.some((u) => (u.universityCode || "").trim().toUpperCase() === (req.proposedCode || "").trim().toUpperCase())
+                              : companies.some((c) => (c.companyCode || "").trim().toUpperCase() === (req.proposedCode || "").trim().toUpperCase())
+                            ) && (
+                              <span className="text-[9px] font-sans font-medium px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                Key Re-Issue
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td className="px-3 py-3 text-indigo-200/80">{req.contactEmail}</td>
                         <td className="px-3 py-3 text-indigo-200/50">
                           {new Date(req.timestamp).toLocaleDateString()}
