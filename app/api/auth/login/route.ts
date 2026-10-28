@@ -209,12 +209,21 @@ export async function POST(req: NextRequest) {
       }
 
       if (entityType === "university") {
-        const u = await contract.getUniversity(verifiedRecord.entityId);
-        if (!u.active) {
-          return NextResponse.json(
-            { error: `University authority "${verifiedRecord.name}" is currently suspended on-chain.` },
-            { status: 403 }
-          );
+        let resolvedId = verifiedRecord.entityId;
+        try {
+          const idFromCode = Number(await contract.universityCodeToId(verifiedRecord.codeIdentifier.toUpperCase()));
+          if (idFromCode > 0) {
+            resolvedId = idFromCode;
+          }
+          const u = await contract.getUniversity(resolvedId);
+          if (!u.active) {
+            return NextResponse.json(
+              { error: `University authority "${verifiedRecord.name}" is currently suspended on-chain.` },
+              { status: 403 }
+            );
+          }
+        } catch (chainErr) {
+          console.warn("On-chain university check soft-fallback:", chainErr);
         }
 
         if (signature && message && wallet) {
@@ -235,19 +244,28 @@ export async function POST(req: NextRequest) {
           account: verifiedRecord.wallet,
           studentUSN: null,
           entityInfo: {
-            id: verifiedRecord.entityId,
+            id: resolvedId,
             name: verifiedRecord.name,
             code: verifiedRecord.codeIdentifier,
             wallet: verifiedRecord.wallet,
           },
         };
       } else {
-        const c = await contract.getCompany(verifiedRecord.entityId);
-        if (!c.active) {
-          return NextResponse.json(
-            { error: `Corporate partner "${verifiedRecord.name}" is currently suspended on-chain.` },
-            { status: 403 }
-          );
+        let resolvedId = verifiedRecord.entityId;
+        try {
+          const idFromCode = Number(await contract.companyCodeToId(verifiedRecord.codeIdentifier.toUpperCase()));
+          if (idFromCode > 0) {
+            resolvedId = idFromCode;
+          }
+          const c = await contract.getCompany(resolvedId);
+          if (!c.active) {
+            return NextResponse.json(
+              { error: `Corporate partner "${verifiedRecord.name}" is currently suspended on-chain.` },
+              { status: 403 }
+            );
+          }
+        } catch (chainErr) {
+          console.warn("On-chain company check soft-fallback:", chainErr);
         }
 
         if (signature && message && wallet) {
@@ -268,7 +286,7 @@ export async function POST(req: NextRequest) {
           account: verifiedRecord.wallet,
           studentUSN: null,
           entityInfo: {
-            id: verifiedRecord.entityId,
+            id: resolvedId,
             name: verifiedRecord.name,
             code: verifiedRecord.codeIdentifier,
             wallet: verifiedRecord.wallet,

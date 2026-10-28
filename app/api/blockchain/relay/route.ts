@@ -667,12 +667,21 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Company name and code are required" }, { status: 400 });
       }
 
+      let targetWallet = (wallet || "").trim();
+      if (!targetWallet || targetWallet === "0x0000000000000000000000000000000000000000" || !ethers.isAddress(targetWallet)) {
+        targetWallet = ethers.Wallet.createRandom().address;
+      }
+
       const { contract } = getServerContract("admin");
-      const tx = await contract.registerCompany(name.trim(), companyCode.trim().toUpperCase(), wallet);
+      const cleanCode = companyCode.trim().toUpperCase();
+      const tx = await contract.registerCompany(name.trim(), cleanCode, targetWallet);
       const receipt = await tx.wait();
+      const entityId = Number(await contract.companyCodeToId(cleanCode));
 
       return NextResponse.json({
         success: true,
+        entityId,
+        wallet: targetWallet,
         txHash: receipt.hash,
       });
     }
@@ -686,12 +695,21 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "University name and code are required" }, { status: 400 });
       }
 
+      let targetWallet = (wallet || "").trim();
+      if (!targetWallet || targetWallet === "0x0000000000000000000000000000000000000000" || !ethers.isAddress(targetWallet)) {
+        targetWallet = ethers.Wallet.createRandom().address;
+      }
+
       const { contract } = getServerContract("admin");
-      const tx = await contract.registerUniversity(name.trim(), universityCode.trim().toUpperCase(), "VTU", wallet);
+      const cleanCode = universityCode.trim().toUpperCase();
+      const tx = await contract.registerUniversity(name.trim(), cleanCode, "VTU", targetWallet);
       const receipt = await tx.wait();
+      const entityId = Number(await contract.universityCodeToId(cleanCode));
 
       return NextResponse.json({
         success: true,
+        entityId,
+        wallet: targetWallet,
         txHash: receipt.hash,
       });
     }

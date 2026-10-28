@@ -263,37 +263,38 @@ export async function POST(req: NextRequest) {
         data: { approved: true, status: "approved" },
       });
 
+      // Determine true on-chain entity ID
+      let resolvedEntityId = Number(body.entityId);
+      if (!resolvedEntityId || resolvedEntityId <= 0) {
+        try {
+          const contract = getReadOnlyServerContract();
+          if (reqRecord?.entityType === "company") {
+            resolvedEntityId = Number(await contract.companyCodeToId(reqRecord.proposedCode));
+          } else if (reqRecord) {
+            resolvedEntityId = Number(await contract.universityCodeToId(reqRecord.proposedCode));
+          }
+        } catch {}
+      }
+      const finalEntityId = resolvedEntityId > 0 ? resolvedEntityId : targetId;
+      const finalWallet = body.wallet || reqRecord?.wallet || "0x0000000000000000000000000000000000000000";
+
       // Generate random high-entropy secret access code, store bcrypt hash in database
       let secretAccessCode = "";
       if (reqRecord) {
         secretAccessCode = await generateAndStoreAccessCode(
           reqRecord.entityType as "university" | "company",
-          targetId,
+          finalEntityId,
           reqRecord.proposedCode,
           reqRecord.name,
-          reqRecord.wallet
+          finalWallet
         );
-
-        // Auto-deliver passkey and onboarding instructions to institution's contactEmail
-        if (reqRecord.contactEmail) {
-          try {
-            await sendApprovalEmail({
-              to: reqRecord.contactEmail,
-              entityType: reqRecord.entityType as "university" | "company",
-              name: reqRecord.name,
-              code: reqRecord.proposedCode,
-              secretAccessCode,
-            });
-          } catch (emailErr) {
-            console.warn("Failed to dispatch approval email:", emailErr);
-          }
-        }
       }
 
       return NextResponse.json({
         success: true,
         requestId: targetId,
-        secretAccessCode, // Returned to the admin modal as well
+        entityId: finalEntityId,
+        secretAccessCode,
         contactEmail: reqRecord?.contactEmail || "",
       });
     }
@@ -377,6 +378,26 @@ export async function POST(req: NextRequest) {
         data: { status: "dismissed" },
       });
       return NextResponse.json({ success: true, requests: [] });
+    }
+
+    // ----------------------------------------------------
+    // Admin Action: Purge & Reset Platform Database (when new contract deployed)
+    // ----------------------------------------------------
+    if (action === "reset_platform") {
+      try {
+        await prisma.studentMark.deleteMany({});
+        await prisma.studentMarkVersion.deleteMany({});
+        await prisma.studentAchievement.deleteMany({});
+        await prisma.studentWalletLink.deleteMany({});
+        await prisma.studentOTP.deleteMany({});
+        await prisma.studentProfile.deleteMany({});
+        await prisma.institutionCredential.deleteMany({});
+        await prisma.accessRequest.deleteMany({});
+        await prisma.rateLimitCounter.deleteMany({});
+        return NextResponse.json({ success: true, message: "Database purged and reset to 100% clean state." });
+      } catch (err: any) {
+        return NextResponse.json({ error: err.message || "Failed to reset platform" }, { status: 500 });
+      }
     }
 
     // ----------------------------------------------------

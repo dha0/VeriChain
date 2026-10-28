@@ -1,6 +1,6 @@
-// Auto-generated during deployment on 2026-10-26T15:47:51.317Z
+// Auto-generated during deployment on 2026-10-27T17:12:54.780Z
 export const CONTRACT_ADDRESS =
-  process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || "0x20Eb97621eDB01106b9FA712828926cBdfE0dda3";
+  process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || "0x20013DdE38d017fFC92521468671bFbd99Ef296f";
 
 export const SUPPORTED_NETWORKS = {
   LOCAL: {

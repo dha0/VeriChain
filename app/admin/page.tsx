@@ -391,6 +391,7 @@ export default function AdminPage() {
 
       // On-chain registration via relayer (with signer fallback)
       let onChainOk = false;
+      let registeredEntityId = 0;
       try {
         const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
         const relayRes = await fetch("/api/blockchain/relay", {
@@ -412,7 +413,11 @@ export default function AdminPage() {
             },
           }),
         });
-        if (relayRes.ok) onChainOk = true;
+        if (relayRes.ok) {
+          onChainOk = true;
+          const relayData = await relayRes.json();
+          if (relayData.entityId) registeredEntityId = Number(relayData.entityId);
+        }
       } catch {}
 
       if (!onChainOk) {
@@ -421,9 +426,13 @@ export default function AdminPage() {
           if (req.entityType === "university") {
             const tx = await contract.registerUniversity(req.name.trim(), req.proposedCode.trim().toUpperCase(), targetWallet);
             await tx.wait();
+            const idBig = await contract.universityCodeToId(req.proposedCode.trim().toUpperCase());
+            registeredEntityId = Number(idBig);
           } else {
             const tx = await contract.registerCompany(req.name.trim(), req.proposedCode.trim().toUpperCase(), targetWallet);
             await tx.wait();
+            const idBig = await contract.companyCodeToId(req.proposedCode.trim().toUpperCase());
+            registeredEntityId = Number(idBig);
           }
         } catch (signerErr) {
           console.warn("Direct signer fallback warning:", signerErr);
@@ -444,7 +453,12 @@ export default function AdminPage() {
             "Content-Type": "application/json",
             "x-admin-wallet": adminWallet,
           },
-          body: JSON.stringify({ action: "approve", requestId: req.requestId }),
+          body: JSON.stringify({
+            action: "approve",
+            requestId: req.requestId,
+            entityId: registeredEntityId,
+            wallet: targetWallet,
+          }),
         });
         const approveData = await approveRes.json();
         if (approveData.secretAccessCode) {
@@ -452,7 +466,7 @@ export default function AdminPage() {
             name: req.name,
             code: req.proposedCode,
             secret: approveData.secretAccessCode,
-            email: req.contactEmail || approveData.contactEmail || "",
+            email: req.contactEmail || "",
           });
         }
       } catch (e) {}
@@ -518,6 +532,38 @@ export default function AdminPage() {
       await fetchData();
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleResetPlatform = async () => {
+    if (!confirm("Are you sure you want to purge all old database records and reset the platform to a clean state? This will synchronize with the fresh smart contract.")) return;
+    setIsLoading(true);
+    setStatusMessage({ text: "Purging legacy database records...", type: "info" });
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("verichain_hidden_entities");
+        setHiddenCodes([]);
+      }
+      const adminWallet = currentAccount || authAccount || "0x59FD799647b8b5718fBAD523A1c5b87D600C1Fb8";
+      const res = await fetch("/api/requests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-wallet": adminWallet,
+        },
+        body: JSON.stringify({ action: "reset_platform" }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setStatusMessage({ text: "Platform database reset successfully. Ledger is 100% clean!", type: "success" });
+      } else {
+        setStatusMessage({ text: data.error || "Failed to reset platform", type: "error" });
+      }
+      await fetchData();
+    } catch (e: any) {
+      setStatusMessage({ text: e.message || "Reset failed", type: "error" });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -839,14 +885,26 @@ export default function AdminPage() {
             </p>
           </div>
 
-          <button
-            onClick={fetchData}
-            disabled={isLoading}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-800/60 dark:bg-slate-900/90 border border-indigo-600/50 dark:border-purple-800/40 text-xs text-indigo-100 dark:text-purple-300 hover:text-white dark:hover:text-white transition-all shadow-sm hover:border-indigo-400 hover:bg-indigo-700/60 dark:hover:bg-slate-800"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
-            Sync Ledger
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleResetPlatform}
+              disabled={isLoading}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-900/40 hover:bg-rose-800/60 border border-rose-700/50 text-xs text-rose-200 hover:text-white transition-all shadow-sm"
+              title="Purge legacy database records and sync cleanly with fresh smart contract"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Reset Platform Data
+            </button>
+
+            <button
+              onClick={fetchData}
+              disabled={isLoading}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-800/60 dark:bg-slate-900/90 border border-indigo-600/50 dark:border-purple-800/40 text-xs text-indigo-100 dark:text-purple-300 hover:text-white dark:hover:text-white transition-all shadow-sm hover:border-indigo-400 hover:bg-indigo-700/60 dark:hover:bg-slate-800"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
+              Sync Ledger
+            </button>
+          </div>
         </div>
 
 
@@ -1398,14 +1456,12 @@ export default function AdminPage() {
                 Only its salted bcrypt hash is stored in the database. Copy and securely share it with the institution authority.
               </div>
 
-              {newSecretModal.email && (
-                <div className="p-3 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs flex items-start gap-2">
-                  <Mail className="w-4 h-4 shrink-0 mt-0.5 text-blue-400" />
-                  <div>
-                    <strong>Dispatched via Email:</strong> Onboarding passkey and login instructions have been automatically sent to <strong>{newSecretModal.email}</strong>.
-                  </div>
+              <div className="p-3 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs flex items-start gap-2">
+                <Shield className="w-4 h-4 shrink-0 mt-0.5 text-indigo-400" />
+                <div>
+                  <strong>Direct Administrator Passkey:</strong> Copy and share this secret passkey directly with the authorized representative of <strong>{newSecretModal.name}</strong>. Zero 3rd-party email reliance.
                 </div>
-              )}
+              </div>
 
               <div className="space-y-1.5 text-xs text-slate-300">
                 <div><strong>Organization:</strong> {newSecretModal.name}</div>
