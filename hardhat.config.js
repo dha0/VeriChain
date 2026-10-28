@@ -46,6 +46,9 @@ module.exports = {
       chainId: 11155111,
     },
   },
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_API_KEY || "JQIP9YQEPBCIN3KCQTXIZ7269FK4CUG7ZC",
+  },
   paths: {
     sources: "./contracts",
     tests: "./test",
