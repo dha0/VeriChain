@@ -28,8 +28,9 @@ interface AuthContextType {
   loginUniversityWithCode: (code: string, accessCode?: string) => Promise<void>;
   loginCompanyWithCode: (code: string, accessCode?: string) => Promise<void>;
   loginWithUSN: (usn: string, otp?: string) => Promise<void>;
+  loginStudentWithUSN: (usn: string) => Promise<void>;
   requestStudentOTP: (usn: string) => Promise<{ success: boolean; message: string; devOTP?: string; displayOTP?: string; otp?: string }>;
-  loginStudentWithOTP: (usn: string, otp: string) => Promise<void>;
+  loginStudentWithOTP: (usn: string, otp?: string) => Promise<void>;
   loginStudentWithWallet: (usn: string) => Promise<void>;
   loginAdminWithWallet: () => Promise<void>;
   logout: () => Promise<void>;
@@ -303,13 +304,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /**
-   * Student Login via USN + Verified Email OTP
+   * Candidate Student Direct Login via USN (No OTP Required)
    */
-  const loginStudentWithOTP = async (usn: string, otp: string) => {
+  const loginStudentWithUSN = async (usn: string) => {
     const cleanUSN = usn.trim().toUpperCase();
-    const cleanOTP = otp.trim();
-    if (!cleanUSN) throw new Error("Please enter a valid USN / Roll Number");
-    if (!cleanOTP) throw new Error("Please enter the 6-digit OTP sent to your email.");
+    if (!cleanUSN) throw new Error("Please enter your University Seat Number (USN).");
 
     setIsLoading(true);
     try {
@@ -319,13 +318,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({
           loginType: "student",
           usn: cleanUSN,
-          otp: cleanOTP,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || "Student OTP verification failed.");
+        throw new Error(data.error || "Student authentication failed.");
       }
 
       setRole(data.session.role);
@@ -335,6 +333,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setIsLoading(false);
     }
+  };
+
+  /**
+   * Student Login via USN (Legacy OTP alias compatible with direct login)
+   */
+  const loginStudentWithOTP = async (usn: string, _otp?: string) => {
+    return loginStudentWithUSN(usn);
   };
 
   /**
@@ -379,14 +384,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /**
-   * Legacy wrapper supporting OTP or direct login
+   * Primary student login function
    */
-  const loginWithUSN = async (usn: string, otp?: string) => {
-    if (otp) {
-      await loginStudentWithOTP(usn, otp);
-    } else {
-      await loginStudentWithWallet(usn);
-    }
+  const loginWithUSN = async (usn: string, _otp?: string) => {
+    return loginStudentWithUSN(usn);
   };
 
   /**
@@ -462,6 +463,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginUniversityWithCode,
         loginCompanyWithCode,
         loginWithUSN,
+        loginStudentWithUSN,
         requestStudentOTP,
         loginStudentWithOTP,
         loginStudentWithWallet,

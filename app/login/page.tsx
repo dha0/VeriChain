@@ -46,8 +46,7 @@ export default function LoginPage() {
     loginUniversityWithWallet,
     loginCompanyWithWallet,
     loginWithUSN,
-    requestStudentOTP,
-    loginStudentWithOTP,
+    loginStudentWithUSN,
     logout,
   } = useAuth();
 
@@ -62,13 +61,8 @@ export default function LoginPage() {
   const [compCode, setCompCode] = useState("");
   const [compSecret, setCompSecret] = useState("");
 
-  // Student Form State
+  // Student Form State (Direct USN Login)
   const [studentInput, setStudentInput] = useState("");
-  const [studentOtp, setStudentOtp] = useState("");
-  const [receivedOtp, setReceivedOtp] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
-  const [otpNotice, setOtpNotice] = useState("");
-  const [isSendingOtp, setIsSendingOtp] = useState(false);
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -138,44 +132,16 @@ export default function LoginPage() {
     }
   };
 
-  const handleRequestOtp = async () => {
-    if (!studentInput.trim()) {
-      setErrorMessage("Please enter your University Seat Number (USN) first.");
-      return;
-    }
-    setIsSendingOtp(true);
-    setErrorMessage("");
-    setOtpNotice("");
-    try {
-      const res = await requestStudentOTP(studentInput);
-      setOtpSent(true);
-      const generated = res.displayOTP || res.otp || res.devOTP || "";
-      if (generated) {
-        setReceivedOtp(generated);
-      }
-      setOtpNotice(res.message || "Security OTP generated.");
-    } catch (err: any) {
-      setErrorMessage(err.message || parseBlockchainError(err));
-    } finally {
-      setIsSendingOtp(false);
-    }
-  };
-
   const handleStudentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!studentInput.trim()) return;
-    if (!otpSent) {
-      await handleRequestOtp();
-      return;
-    }
-    if (!studentOtp.trim()) {
-      setErrorMessage("Please enter the 6-digit OTP code sent to your email.");
+    if (!studentInput.trim()) {
+      setErrorMessage("Please enter your University Seat Number (USN).");
       return;
     }
     setIsLoggingIn(true);
     setErrorMessage("");
     try {
-      await loginStudentWithOTP(studentInput, studentOtp);
+      await loginStudentWithUSN(studentInput);
       router.push("/student");
     } catch (err: any) {
       setErrorMessage(err.message || parseBlockchainError(err));
@@ -614,83 +580,20 @@ export default function LoginPage() {
                       type="text"
                       required
                       value={studentInput}
-                      onChange={(e) => {
-                        setStudentInput(e.target.value);
-                        if (otpSent) setOtpSent(false);
-                      }}
-                      placeholder="Enter University Seat Number (USN)"
-                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                      onChange={(e) => setStudentInput(e.target.value)}
+                      placeholder="e.g. 1CG23CS023"
+                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white uppercase font-mono tracking-wider focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 shadow-inner"
                     />
                   </div>
 
-                  {otpNotice && (
-                    <div className="p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-600 dark:text-purple-300 text-xs">
-                      {otpNotice}
-                    </div>
-                  )}
-
-                  {receivedOtp && (
-                    <div className="p-3 rounded-xl bg-purple-500/15 border border-purple-500/40 text-purple-700 dark:text-purple-200 text-xs flex items-center justify-between shadow-sm">
-                      <div>
-                        <div className="text-[10px] text-purple-600 dark:text-purple-400 font-semibold uppercase tracking-wider">
-                          One-Time Passkey (OTP)
-                        </div>
-                        <div className="text-lg font-mono font-bold tracking-widest text-purple-800 dark:text-purple-200">
-                          {receivedOtp}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setStudentOtp(receivedOtp)}
-                        className="px-3 py-1.5 text-[11px] font-bold bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-all shadow"
-                      >
-                        Auto-fill
-                      </button>
-                    </div>
-                  )}
-
-                  {otpSent ? (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300">
-                          6-Digit Email OTP
-                        </label>
-                        <button
-                          type="button"
-                          onClick={handleRequestOtp}
-                          disabled={isSendingOtp}
-                          className="text-[11px] text-purple-600 dark:text-purple-400 hover:underline"
-                        >
-                          Resend Code
-                        </button>
-                      </div>
-                      <input
-                        type="text"
-                        maxLength={6}
-                        required
-                        value={studentOtp}
-                        onChange={(e) => setStudentOtp(e.target.value)}
-                        placeholder="Enter 6-digit OTP"
-                        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white font-mono tracking-widest text-center focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
-                      />
-                    </div>
-                  ) : null}
-
                   <button
                     type="submit"
-                    disabled={isLoggingIn || isSendingOtp}
+                    disabled={isLoggingIn}
                     className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold py-2.5 px-4 rounded-xl text-xs transition-all shadow-lg shadow-purple-600/25 flex items-center justify-center gap-2"
                   >
-                    <span>
-                      {otpSent
-                        ? isLoggingIn
-                          ? "Verifying OTP..."
-                          : "Verify OTP & Enter Locker"
-                        : isSendingOtp
-                        ? "Sending Security OTP..."
-                        : "Send Security OTP to Email"}
-                    </span>
-                    <ArrowRight className="w-4 h-4" />
+                    <GraduationCap className="w-4 h-4" />
+                    <span>{isLoggingIn ? "Accessing Locker..." : "Sign In to Student Locker"}</span>
+                    <ArrowRight className="w-4 h-4 ml-auto" />
                   </button>
                 </form>
               </div>
