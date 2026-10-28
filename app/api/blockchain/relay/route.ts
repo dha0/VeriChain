@@ -269,10 +269,29 @@ export async function POST(req: NextRequest) {
     // 2. ISSUE CREDENTIAL
     // -------------------------------------------------------------------------
     if (action === "issueCredential") {
-      const { studentId, documentType, documentHash, ipfsCID } = data || {};
-      if (!studentId || !documentHash || !ipfsCID) {
+      const { studentId, studentUsn, usn, documentType, documentHash, ipfsCID } = data || {};
+      let resolvedStudentId = Number(studentId);
+
+      // If studentId not provided or 0, resolve dynamically using student USN
+      if ((!resolvedStudentId || resolvedStudentId <= 0) && (usn || studentUsn)) {
+        const cleanUsn = (usn || studentUsn).trim().toUpperCase();
+        try {
+          const contractReadOnly = getReadOnlyServerContract();
+          const idBig = await contractReadOnly.usnToStudentId(cleanUsn);
+          if (Number(idBig) > 0) {
+            resolvedStudentId = Number(idBig);
+          } else {
+            const s = await contractReadOnly.getStudentByUSN(cleanUsn);
+            if (s && s.exists) resolvedStudentId = Number(s.id);
+          }
+        } catch (resolveErr) {
+          console.warn("USN resolution warning:", resolveErr);
+        }
+      }
+
+      if (!resolvedStudentId || resolvedStudentId <= 0 || !documentHash || !ipfsCID) {
         return NextResponse.json(
-          { error: "Missing required credential issuance fields (studentId, documentHash, ipfsCID)" },
+          { error: "Missing required credential issuance fields (valid Student USN or studentId, documentHash, ipfsCID)" },
           { status: 400 }
         );
       }
@@ -322,7 +341,7 @@ export async function POST(req: NextRequest) {
 
       const tx = await contract.issueCredentialByUniversity(
         uId,
-        Number(studentId),
+        resolvedStudentId,
         documentType || "Academic Marksheet",
         documentHash,
         ipfsCID

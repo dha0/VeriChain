@@ -95,6 +95,7 @@ export default function UniversityPage() {
   const [isRegisteringStudent, setIsRegisteringStudent] = useState(false);
 
   // Credential Issuance Form States
+  const [selectedStudentUsn, setSelectedStudentUsn] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [selectedDocType, setSelectedDocType] = useState<DocumentType>("Degree Certificate");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -341,6 +342,13 @@ export default function UniversityPage() {
         type: "info",
       });
 
+      const cleanUsn = selectedStudentUsn.trim().toUpperCase();
+      let targetStudentId = Number(selectedStudentId);
+      if (!targetStudentId || targetStudentId <= 0) {
+        const found = students.find((s) => s.usn.toUpperCase() === cleanUsn);
+        if (found) targetStudentId = found.id;
+      }
+
       const res = await fetch("/api/blockchain/relay", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -348,7 +356,9 @@ export default function UniversityPage() {
           action: "issueCredential",
           universityCode: currentUnivCode,
           data: {
-            studentId: Number(selectedStudentId),
+            usn: cleanUsn || undefined,
+            studentUsn: cleanUsn || undefined,
+            studentId: targetStudentId || undefined,
             documentType: selectedDocType,
             documentHash: computedHash,
             ipfsCID: cid,
@@ -360,13 +370,14 @@ export default function UniversityPage() {
       if (!res.ok) throw new Error(data.error || "Failed to issue credential on blockchain");
 
       setStatusMessage({
-        text: `${selectedDocType} issued successfully! On-Chain Hash: ${computedHash.slice(0, 10)}... | IPFS: ${cid}`,
+        text: `${selectedDocType} issued successfully for ${cleanUsn || `Student #${targetStudentId}`}! On-Chain Hash: ${computedHash.slice(0, 10)}... | IPFS: ${cid}`,
         type: "success",
       });
 
       setSelectedFile(null);
       setComputedHash("");
       setSelectedStudentId("");
+      setSelectedStudentUsn("");
       await loadUniversityData();
     } catch (err: any) {
       setStatusMessage({
@@ -1098,17 +1109,52 @@ export default function UniversityPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                      Student ID (#)
+                      Candidate USN (University Seat Number) *
                     </label>
                     <input
-                      type="number"
+                      type="text"
                       required
-                      min={1}
-                      placeholder="Enter Registered Student ID"
-                      value={selectedStudentId}
-                      onChange={(e) => setSelectedStudentId(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500 font-mono"
+                      placeholder="e.g. 1CG23CS023"
+                      value={selectedStudentUsn}
+                      onChange={(e) => {
+                        const val = e.target.value.toUpperCase();
+                        setSelectedStudentUsn(val);
+                        const found = students.find((s) => s.usn.toUpperCase() === val.trim());
+                        if (found) setSelectedStudentId(String(found.id));
+                      }}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500 font-mono uppercase tracking-wider"
                     />
+                    {students.length > 0 && (
+                      <select
+                        value={selectedStudentUsn}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSelectedStudentUsn(val);
+                          const found = students.find((s) => s.usn.toUpperCase() === val.toUpperCase());
+                          if (found) setSelectedStudentId(String(found.id));
+                        }}
+                        className="w-full mt-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1 text-[11px] text-sky-300 font-mono focus:border-sky-500"
+                      >
+                        <option value="">-- Or Select from Enrolled Candidates --</option>
+                        {students.map((s) => (
+                          <option key={s.usn} value={s.usn}>
+                            {s.usn} - {s.name} ({s.course})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {selectedStudentUsn && (() => {
+                      const found = students.find((s) => s.usn.toUpperCase() === selectedStudentUsn.trim().toUpperCase());
+                      if (found) {
+                        return (
+                          <div className="mt-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-400 flex items-center justify-between">
+                            <span className="font-semibold">{found.name}</span>
+                            <span className="font-mono text-[10px] text-emerald-300">Enrolled ✓</span>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                   </div>
 
                   <div>
@@ -1301,10 +1347,22 @@ export default function UniversityPage() {
                     <input
                       type="text"
                       required
-                      placeholder="Enter student USN"
+                      placeholder="Enter student USN (e.g. 1CG23CS023)"
                       value={genUsn}
-                      onChange={(e) => setGenUsn(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500 uppercase font-mono"
+                      onChange={(e) => {
+                        const val = e.target.value.toUpperCase();
+                        setGenUsn(val);
+                        const found = students.find((s) => s.usn.toUpperCase() === val.trim());
+                        if (found) {
+                          setGenStudentId(String(found.id));
+                          setGenName(found.name);
+                          setGenCourse(found.course);
+                          setGenGradYear(found.graduationYear);
+                          setGenPercentage(found.percentage);
+                          setGenSubjects(getDefaultSubjectsForCourse(found.course, found.percentage));
+                        }
+                      }}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-sky-500 uppercase font-mono tracking-wider"
                     />
                   </div>
 
@@ -2009,7 +2067,19 @@ export default function UniversityPage() {
                     {credentials.map((c) => (
                       <tr key={c.credentialId} className="hover:bg-slate-900/50 transition-colors">
                         <td className="px-3 py-3 font-bold text-sky-300">#{c.credentialId}</td>
-                        <td className="px-3 py-3 text-slate-200 font-sans">Student #{c.studentId}</td>
+                        <td className="px-3 py-3 text-slate-200 font-sans">
+                          {(() => {
+                            const st = students.find((s) => s.id === c.studentId);
+                            return st ? (
+                              <div className="flex flex-col">
+                                <span className="font-mono text-sky-300 font-bold">{st.usn}</span>
+                                <span className="text-[10px] text-slate-400">{st.name}</span>
+                              </div>
+                            ) : (
+                              <span>Student #{c.studentId}</span>
+                            );
+                          })()}
+                        </td>
                         <td className="px-3 py-3 font-sans text-slate-300 font-semibold">{c.documentType}</td>
                         <td className="px-3 py-3 text-slate-400">v{c.version}</td>
                         <td className="px-3 py-3 text-cyan-300 max-w-xs truncate" title={c.documentHash}>
