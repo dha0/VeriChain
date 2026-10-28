@@ -428,7 +428,17 @@ export async function POST(req: NextRequest) {
 
       let studentData: any = null;
 
-      // 1. Query verified on-chain registry on Ethereum Sepolia
+      // 1. Query PostgreSQL database for real academic profile & percentage
+      let dbProfile: any = null;
+      try {
+        dbProfile = await prisma.studentProfile.findUnique({
+          where: { usn: cleanUSN },
+        });
+      } catch (dbErr) {
+        console.warn("DB student lookup error:", dbErr);
+      }
+
+      // 2. Query verified on-chain registry on Ethereum Sepolia
       try {
         const s = await contract.getStudentByUSN(cleanUSN);
         if (s && s.exists) {
@@ -437,7 +447,10 @@ export async function POST(req: NextRequest) {
             name: s.name,
             course: s.course,
             graduationYear: Number(s.graduationYear),
-            percentage: Number(s.percentage) || 88,
+            percentage:
+              dbProfile && dbProfile.percentage != null && !isNaN(Number(dbProfile.percentage))
+                ? Number(dbProfile.percentage)
+                : Number(s.percentage) || 85,
             universityId: Number(s.universityId),
           };
         }
@@ -445,25 +458,19 @@ export async function POST(req: NextRequest) {
         console.warn("On-chain student lookup warning:", chainErr);
       }
 
-      // 2. Query mirrored PostgreSQL database
-      if (!studentData) {
-        try {
-          const dbProfile = await prisma.studentProfile.findUnique({
-            where: { usn: cleanUSN },
-          });
-          if (dbProfile) {
-            studentData = {
-              id: dbProfile.id,
-              name: dbProfile.name,
-              course: dbProfile.course,
-              graduationYear: dbProfile.gradYear,
-              percentage: dbProfile.percentage || 88,
-              universityId: dbProfile.universityId,
-            };
-          }
-        } catch (dbErr) {
-          console.warn("DB student lookup error:", dbErr);
-        }
+      // 3. Fallback to DB profile if on-chain lookup failed or pending
+      if (!studentData && dbProfile) {
+        studentData = {
+          id: dbProfile.id,
+          name: dbProfile.name,
+          course: dbProfile.course,
+          graduationYear: dbProfile.gradYear,
+          percentage:
+            dbProfile.percentage != null && !isNaN(Number(dbProfile.percentage))
+              ? Number(dbProfile.percentage)
+              : 85,
+          universityId: dbProfile.universityId,
+        };
       }
 
       if (!studentData) {

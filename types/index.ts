@@ -65,6 +65,9 @@ export interface Credential {
 export interface Achievement {
   achievementId: number;
   studentId: number;
+  studentUSN?: string;
+  collegeCode?: string;
+  txHash?: string;
   title: string;
   issuerOrg: string;
   category: string;

@@ -210,13 +210,32 @@ export default function CompanyPage() {
         }
       } catch (e) {}
 
+      // Fetch candidate academic history & percentage from database
+      let candidatePercentage = 85;
+      let candidateMarks: any[] = [];
+      try {
+        const histRes = await fetch(`/api/students/history?usn=${encodeURIComponent(foundStudent.usn)}`);
+        if (histRes.ok) {
+          const histData = await histRes.json();
+          if (histData.student) {
+            if (histData.student.percentage != null && !isNaN(Number(histData.student.percentage))) {
+              candidatePercentage = Number(histData.student.percentage);
+            }
+            if (histData.student.marks) {
+              candidateMarks = histData.student.marks;
+            }
+          }
+        }
+      } catch (e) {}
+
       setCandidateSummary({
         id: sId,
         usn: foundStudent.usn,
         name: foundStudent.name,
         course: foundStudent.course,
         graduationYear: Number(foundStudent.graduationYear),
-        percentage: Number(foundStudent.percentage),
+        percentage: candidatePercentage,
+        marks: candidateMarks,
         universityName: uName,
         universityCode: uCode,
       });

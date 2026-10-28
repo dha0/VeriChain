@@ -65,6 +65,7 @@ export async function GET(req: NextRequest) {
 
       const student = await prisma.studentProfile.findUnique({
         where: { usn: studentUsn },
+        include: { marks: true },
       });
 
       const versions = await prisma.studentMarkVersion.findMany({
@@ -75,10 +76,26 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ student, versions });
     }
 
+    if (session.role === "company") {
+      if (!requestedUsn) {
+        return NextResponse.json({ error: "Candidate USN is required." }, { status: 400 });
+      }
+      const student = await prisma.studentProfile.findUnique({
+        where: { usn: requestedUsn },
+        include: { marks: true },
+      });
+      const versions = await prisma.studentMarkVersion.findMany({
+        where: { usn: requestedUsn },
+        orderBy: { version: "desc" },
+      });
+      return NextResponse.json({ student, versions });
+    }
+
     if (session.role === "admin") {
       if (requestedUsn) {
         const student = await prisma.studentProfile.findUnique({
           where: { usn: requestedUsn },
+          include: { marks: true },
         });
         const versions = await prisma.studentMarkVersion.findMany({
           where: { usn: requestedUsn },

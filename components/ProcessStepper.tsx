@@ -236,14 +236,25 @@ export const ProcessStepper: React.FC<ProcessStepperProps> = ({
       {/* 4. NEXT ACTION GUIDE ("Next: <step title> - <what to do>") */}
       {/* ------------------------------------------------------------------ */}
       {!hasError && (
-        <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs">
+        <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
           <div className="flex items-center space-x-2 text-slate-700 dark:text-slate-300">
             <ArrowRight className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0" />
             <span className="font-medium">{nextStepGuide}</span>
           </div>
-          <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 hidden sm:inline">
-            {completedCount} of {totalSteps} Completed ({progressPercent}%)
-          </span>
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            {actionText && onAction && (
+              <button
+                type="button"
+                onClick={onAction}
+                className="inline-flex items-center px-3 py-1 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-colors"
+              >
+                {actionText}
+              </button>
+            )}
+            <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 hidden sm:inline">
+              {completedCount} of {totalSteps} Completed ({progressPercent}%)
+            </span>
+          </div>
         </div>
       )}
     </div>

@@ -67,12 +67,26 @@ export function getStudentStepperState(params: StudentStepperParams): StepperSta
   );
 
   // Cross-student data isolation: Filter achievements strictly to the authenticated student
-  const studentAchievements = (params.achievements || []).filter(
-    (a) => a.studentUSN && a.studentUSN.trim().toUpperCase() === sessionUsn
-  );
+  const studentAchievements = (params.achievements || []).filter((a) => {
+    if (a.studentUSN) {
+      return a.studentUSN.trim().toUpperCase() === sessionUsn;
+    }
+    if (params.student && Number(params.student.id) > 0 && a.studentId) {
+      return a.studentId === Number(params.student.id);
+    }
+    return false;
+  });
 
   const hasUploaded = studentAchievements.length > 0;
-  const latestAch = hasUploaded ? studentAchievements[studentAchievements.length - 1] : null;
+
+  // Sort achievements so the true latest submission is evaluated first
+  const sortedAch = [...studentAchievements].sort((a, b) => {
+    const timeA = typeof a.submittedAt === "number" ? a.submittedAt : new Date(a.submittedAt || 0).getTime();
+    const timeB = typeof b.submittedAt === "number" ? b.submittedAt : new Date(b.submittedAt || 0).getTime();
+    if (timeA !== timeB) return timeB - timeA;
+    return (b.achievementId || 0) - (a.achievementId || 0);
+  });
+  const latestAch = hasUploaded ? sortedAch[0] : null;
 
   // Status mapping: 0 | "pending" = PendingReview, 1 | "verified" = Verified, 2 | "rejected" = Rejected
   const isPending =
@@ -95,6 +109,14 @@ export function getStudentStepperState(params: StudentStepperParams): StepperSta
       latestAch.status === "2" ||
       String(latestAch.status).toLowerCase() === "rejected");
 
+  const hasAnyVerified = studentAchievements.some(
+    (a) =>
+      a.status === 1 ||
+      a.status === "1" ||
+      String(a.status).toLowerCase() === "verified" ||
+      String(a.status).toLowerCase() === "endorsed"
+  );
+
   const rejectionReason = isRejected
     ? latestAch?.reviewRemarks?.trim() || "Certificate submission was rejected by your college."
     : undefined;
@@ -113,7 +135,7 @@ export function getStudentStepperState(params: StudentStepperParams): StepperSta
   if (isEnrolled && hasUploaded) {
     if (isRejected) {
       step3Status = "error";
-    } else if (isVerified) {
+    } else if (isVerified || hasAnyVerified) {
       step3Status = "completed";
     } else {
       step3Status = "current";
@@ -122,7 +144,7 @@ export function getStudentStepperState(params: StudentStepperParams): StepperSta
 
   // Determine Step 4: Certificate Endorsed
   let step4Status: StepStatus = "upcoming";
-  if (isVerified) {
+  if (isVerified || (hasAnyVerified && !isRejected)) {
     step4Status = "completed";
   }
 
@@ -138,6 +160,7 @@ export function getStudentStepperState(params: StudentStepperParams): StepperSta
       title: "Upload Certificate",
       description: "Upload co-curricular or academic certificate for official college endorsement",
       status: step2Status,
+      actionText: isEnrolled && !hasUploaded ? "Upload Certificate" : undefined,
     },
     {
       id: "under_review",
@@ -170,7 +193,7 @@ export function getStudentStepperState(params: StudentStepperParams): StepperSta
     errorMessage = rejectionReason;
     actionText = "Re-upload Certificate";
     nextStepGuide = `Action Required: Re-upload Certificate - ${rejectionReason}`;
-  } else if (isVerified) {
+  } else if (isVerified || (hasAnyVerified && !isPending)) {
     currentStepId = "endorsed";
     nextStepGuide = "All Set: Certificate Endorsed - Your credentials are cryptographically anchored on Ethereum.";
   } else if (isPending) {
@@ -178,6 +201,7 @@ export function getStudentStepperState(params: StudentStepperParams): StepperSta
     nextStepGuide = "Next: Awaiting College Review - Your college authority will verify your submission.";
   } else if (isEnrolled && !hasUploaded) {
     currentStepId = "upload_cert";
+    actionText = "Upload Certificate";
     nextStepGuide = "Next: Upload Certificate - Submit a certificate below to request official college verification.";
   }
 

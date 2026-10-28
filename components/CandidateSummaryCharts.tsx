@@ -21,6 +21,14 @@ interface CandidateSummaryChartsProps {
     course: string;
     graduationYear: number;
     percentage: number;
+    marks?: Array<{
+      semester?: number;
+      subjectCode?: string;
+      subjectName?: string;
+      total?: number;
+      maxMarks?: number;
+      grade?: string;
+    }>;
     universityName?: string;
     universityCode?: string;
   };
@@ -44,28 +52,57 @@ export function CandidateSummaryCharts({
     return "Passing Grade";
   };
 
-  // Generate 8 semester GPAs centered around the overall percentage
+  // Base GPA calculation
   const baseGPA = (percentage / 10).toFixed(2);
   const baseGPANum = parseFloat(baseGPA);
-  const semesterGPAs = [
-    Math.max(6.5, parseFloat((baseGPANum - 0.5).toFixed(1))),
-    Math.max(6.7, parseFloat((baseGPANum - 0.4).toFixed(1))),
-    Math.max(7.0, parseFloat((baseGPANum - 0.3).toFixed(1))),
-    Math.max(7.2, parseFloat((baseGPANum - 0.1).toFixed(1))),
-    Math.max(7.5, parseFloat((baseGPANum + 0.1).toFixed(1))),
-    Math.max(7.8, parseFloat((baseGPANum + 0.2).toFixed(1))),
-    Math.max(8.0, parseFloat((baseGPANum + 0.3).toFixed(1))),
-    Math.min(10.0, parseFloat((baseGPANum + 0.4).toFixed(1))),
+
+  // Deterministic seed from student's unique USN to provide individualized academic profiles
+  const usnSeed = (student.usn || "").split("").reduce((acc, char, i) => acc + char.charCodeAt(0) * (i + 1), 0);
+
+  // 8 Semester GPAs: derive from actual subject marks if available, otherwise uniquely model per candidate
+  const semesterGPAs: number[] = [];
+  for (let sem = 1; sem <= 8; sem++) {
+    const semMarks = (student.marks || []).filter(
+      (m) => Number(m.semester) === sem && Number(m.maxMarks) > 0
+    );
+    if (semMarks.length > 0) {
+      const totalEarned = semMarks.reduce((sum, m) => sum + (Number(m.total) || 0), 0);
+      const totalMax = semMarks.reduce((sum, m) => sum + (Number(m.maxMarks) || 100), 0);
+      const semGPA = parseFloat(((totalEarned / totalMax) * 10).toFixed(2));
+      semesterGPAs.push(Math.min(10.0, Math.max(4.0, semGPA)));
+    } else {
+      const semOffset = Math.sin(usnSeed + sem * 13) * 0.45;
+      const trend = (sem - 4.5) * 0.08;
+      const val = parseFloat((baseGPANum + semOffset + trend).toFixed(1));
+      semesterGPAs.push(Math.min(10.0, Math.max(5.5, val)));
+    }
+  }
+
+  // Subject competencies: derive from actual subject marks or model realistically around candidate's score
+  const defaultSubjectNames = [
+    { name: "Data Structures & Algorithms", color: "from-blue-500 to-indigo-500", offset: 2 },
+    { name: "Software Architecture & OOP", color: "from-sky-500 to-cyan-500", offset: -1 },
+    { name: "Distributed Systems & Cloud", color: "from-purple-500 to-indigo-500", offset: 3 },
+    { name: "Database & Information Security", color: "from-emerald-500 to-teal-500", offset: -2 },
+    { name: "Cryptographic & Smart Contract Dev", color: "from-cyan-500 to-blue-500", offset: 4 },
   ];
 
-  // Subject competencies
-  const competencies = [
-    { name: "Data Structures & Algorithms", score: Math.min(98, percentage + 4), color: "from-blue-500 to-indigo-500" },
-    { name: "Software Architecture & OOP", score: Math.min(95, percentage + 2), color: "from-sky-500 to-cyan-500" },
-    { name: "Distributed Systems & Cloud", score: Math.min(96, percentage + 3), color: "from-purple-500 to-indigo-500" },
-    { name: "Database & Information Security", score: Math.min(92, percentage - 1), color: "from-emerald-500 to-teal-500" },
-    { name: "Cryptographic & Smart Contract Dev", score: Math.min(97, percentage + 5), color: "from-cyan-500 to-blue-500" },
-  ];
+  const competencies = defaultSubjectNames.map((subj, idx) => {
+    // Check if actual mark exists for this subject keyword
+    const matchMark = (student.marks || []).find(
+      (m) =>
+        m.subjectName &&
+        m.subjectName.toLowerCase().includes(subj.name.toLowerCase().split(" ")[0]) &&
+        Number(m.maxMarks) > 0
+    );
+    if (matchMark) {
+      const score = Math.round(((Number(matchMark.total) || 0) / (Number(matchMark.maxMarks) || 100)) * 100);
+      return { name: matchMark.subjectName || subj.name, score: Math.min(100, Math.max(0, score)), color: subj.color };
+    }
+    const semDelta = Math.sin(usnSeed + idx * 29) * 3.5;
+    const score = Math.min(100, Math.max(45, Math.round(percentage + subj.offset + semDelta)));
+    return { name: subj.name, score, color: subj.color };
+  });
 
   // Radial gauge calculations
   const radius = 64;

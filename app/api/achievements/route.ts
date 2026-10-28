@@ -43,6 +43,9 @@ export async function GET(req: NextRequest) {
   const achievements: Achievement[] = dbAchievements.map((a: any) => ({
     achievementId: a.achievementId,
     studentId: a.studentId,
+    studentUSN: a.studentUSN || "",
+    collegeCode: a.collegeCode || "",
+    txHash: a.txHash || null,
     title: a.title,
     issuerOrg: a.issuerOrg,
     category: a.category,
