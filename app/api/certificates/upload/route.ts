@@ -151,6 +151,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      documentHash: created.documentHash,
       achievement: {
         achievementId: created.achievementId,
         studentId: created.studentId,
