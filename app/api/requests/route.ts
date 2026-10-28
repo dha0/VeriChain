@@ -199,8 +199,18 @@ export async function POST(req: NextRequest) {
       const highestDbId = highestDbReq ? highestDbReq.requestId : 0;
       const nextId = onChainReqId || (Math.max(highestDbId, highestChainId) + 1);
 
-      const dbRecord = await prisma.accessRequest.create({
-        data: {
+      const dbRecord = await prisma.accessRequest.upsert({
+        where: { requestId: nextId },
+        update: {
+          entityType: entityType || "university",
+          name: name.trim(),
+          proposedCode: cleanCode,
+          contactEmail: contactEmail.trim(),
+          wallet: wallet || "0x0000000000000000000000000000000000000000",
+          approved: false,
+          status: "pending",
+        },
+        create: {
           requestId: nextId,
           entityType: entityType || "university",
           name: name.trim(),
